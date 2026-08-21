@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.kilo/
+compiled/
+*.png
+.DS_Store
+.vscode/
+.idea/

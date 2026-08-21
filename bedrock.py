@@ -352,6 +352,7 @@ class BedrockPattern:
         if k == 0:
             return self
 
+        new_h, new_w = self.height, self.width
         new_pattern = BedrockPattern(mode=self.mode, version=self.version, target_layer=self.target_layer)
         if k == 1:
             new_h, new_w = self.width, self.height

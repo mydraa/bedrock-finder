@@ -346,6 +346,15 @@ function renderGrid() {
     const container = document.getElementById('visualGrid');
     container.innerHTML = '';
     container.style.gridTemplateColumns = `repeat(${currentGridSize}, minmax(0, 1fr))`;
+    
+    // Dynamically adjust gap based on grid size
+    if (currentGridSize >= 12) {
+        container.style.gap = '0.15rem';
+    } else if (currentGridSize >= 8) {
+        container.style.gap = '0.25rem';
+    } else {
+        container.style.gap = '0.375rem';
+    }
 
     let isMouseDown = false;
     let dragVal = null;
@@ -353,10 +362,14 @@ function renderGrid() {
     container.onmouseleave = () => { isMouseDown = false; };
     window.onmouseup = () => { isMouseDown = false; };
 
+    const roundedClass = (currentGridSize >= 10) ? 'rounded' : 'rounded-lg';
+    const fontSize = (currentGridSize >= 12) ? '0.55rem' : (currentGridSize >= 8) ? '0.68rem' : '0.75rem';
+
     for (let r = 0; r < currentGridSize; r++) {
         for (let c = 0; c < currentGridSize; c++) {
             const cell = document.createElement('div');
-            cell.className = 'grid-cell rounded-lg flex items-center justify-center text-xs code-font shadow-sm';
+            cell.className = `grid-cell ${roundedClass} flex items-center justify-center code-font shadow-sm font-bold`;
+            cell.style.fontSize = fontSize;
             cell.dataset.r = r;
             cell.dataset.c = c;
 

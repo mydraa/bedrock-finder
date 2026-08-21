@@ -10,6 +10,7 @@ Version : 1.0.0
 
 import os
 import sys
+import time
 import json
 import base64
 import io
@@ -647,84 +648,93 @@ class BedrockHTTPHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/search":
-            content_len = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_len)
-            data = json.loads(body.decode("utf-8"))
+            try:
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len)
+                data = json.loads(body.decode("utf-8"))
 
-            mode = DimensionMode(data.get("mode", "nether-roof"))
-            version = MinecraftVersion.parse(data.get("version", "1.12"))
-            layer = data.get("layer")
-            seed_val = int(data["seed"]) if data.get("seed") else None
-            radius = int(data.get("radius", 5000))
-            center_x = int(data.get("center_x", 0))
-            center_z = int(data.get("center_z", 0))
-            all_rotations = bool(data.get("all_rotations", True))
-            tab = data.get("tab", "grid")
+                mode = DimensionMode(data.get("mode", "nether-roof"))
+                version = MinecraftVersion.parse(data.get("version", "1.12"))
+                layer = data.get("layer")
+                seed_val = int(data["seed"]) if data.get("seed") else None
+                radius = int(data.get("radius", 5000))
+                center_x = int(data.get("center_x", 0))
+                center_z = int(data.get("center_z", 0))
+                all_rotations = bool(data.get("all_rotations", True))
+                tab = data.get("tab", "grid")
 
-            if tab == "grid":
-                matrix = data.get("matrix", [])
-                # Replace 2 (wildcard) with None
-                clean_mat = []
-                for row in matrix:
-                    clean_mat.append([None if cell == 2 else cell for cell in row])
-                pattern = BedrockPattern(mode=mode, version=version, target_layer=layer, binary_matrix=clean_mat)
-            elif tab == "text":
-                raw_text = data.get("raw_text", "")
-                from bedrock import parse_pattern_from_string_or_file
-                pattern = parse_pattern_from_string_or_file(raw_text, mode=mode, version=version, target_layer=layer)
-            elif tab == "image" and data.get("image_b64"):
-                b64_data = data["image_b64"].split(",")[-1]
-                img_bytes = base64.b64decode(b64_data)
-                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                temp_path = "/tmp/uploaded_bedrock.png"
-                img.save(temp_path)
-                pattern = ImagePatternExtractor.extract_from_image(
-                    image_path=temp_path,
-                    grid_rows=int(data.get("grid_rows", 5)),
-                    grid_cols=int(data.get("grid_cols", 5)),
-                    mode=mode,
-                    version=version,
-                    target_layer=layer
+                if tab == "grid":
+                    matrix = data.get("matrix", [])
+                    # Replace 2 (wildcard) with None
+                    clean_mat = []
+                    for row in matrix:
+                        clean_mat.append([None if cell == 2 else cell for cell in row])
+                    pattern = BedrockPattern(mode=mode, version=version, target_layer=layer, binary_matrix=clean_mat)
+                elif tab == "text":
+                    raw_text = data.get("raw_text", "")
+                    from bedrock import parse_pattern_from_string_or_file
+                    pattern = parse_pattern_from_string_or_file(raw_text, mode=mode, version=version, target_layer=layer)
+                elif tab == "image" and data.get("image_b64"):
+                    b64_data = data["image_b64"].split(",")[-1]
+                    img_bytes = base64.b64decode(b64_data)
+                    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                    temp_path = "/tmp/uploaded_bedrock.png"
+                    img.save(temp_path)
+                    pattern = ImagePatternExtractor.extract_from_image(
+                        image_path=temp_path,
+                        grid_rows=int(data.get("grid_rows", 5)),
+                        grid_cols=int(data.get("grid_cols", 5)),
+                        mode=mode,
+                        version=version,
+                        target_layer=layer
+                    )
+
+                min_x = center_x - radius
+                max_x = center_x + radius
+                min_z = center_z - radius
+                max_z = center_z + radius
+
+                min_cx = min_x >> 4
+                max_cx = max_x >> 4
+                min_cz = min_z >> 4
+                max_cz = max_z >> 4
+                total_chunks = (max_cx - min_cx + 1) * (max_cz - min_cz + 1)
+
+                t0 = time.perf_counter()
+                engine = BedrockSearchEngine(
+                    pattern=pattern,
+                    world_seed=seed_val,
+                    all_rotations=all_rotations
                 )
+                matches = engine.search_bounds(min_x, min_z, max_x, max_z)
+                elapsed = time.perf_counter() - t0
+                speed = total_chunks / elapsed if elapsed > 0 else 0
 
-            min_x = center_x - radius
-            max_x = center_x + radius
-            min_z = center_z - radius
-            max_z = center_z + radius
+                response_data = {
+                    "total_chunks": total_chunks,
+                    "elapsed": elapsed,
+                    "speed": speed,
+                    "matches": [
+                        {
+                            "x": m.x, "y": m.y, "z": m.z,
+                            "chunk_x": m.chunk_x, "chunk_z": m.chunk_z,
+                            "rotation_deg": m.rotation_deg
+                        } for m in matches
+                    ]
+                }
 
-            min_cx = min_x >> 4
-            max_cx = max_x >> 4
-            min_cz = min_z >> 4
-            max_cz = max_z >> 4
-            total_chunks = (max_cx - min_cx + 1) * (max_cz - min_cz + 1)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(response_data).encode("utf-8"))
 
-            t0 = time.perf_counter()
-            engine = BedrockSearchEngine(
-                pattern=pattern,
-                world_seed=seed_val,
-                all_rotations=all_rotations
-            )
-            matches = engine.search_bounds(min_x, min_z, max_x, max_z)
-            elapsed = time.perf_counter() - t0
-            speed = total_chunks / elapsed if elapsed > 0 else 0
-
-            response_data = {
-                "total_chunks": total_chunks,
-                "elapsed": elapsed,
-                "speed": speed,
-                "matches": [
-                    {
-                        "x": m.x, "y": m.y, "z": m.z,
-                        "chunk_x": m.chunk_x, "chunk_z": m.chunk_z,
-                        "rotation_deg": m.rotation_deg
-                    } for m in matches
-                ]
-            }
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response_data).encode("utf-8"))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
 
 
 def start_web_gui(port: int = 5000, open_browser: bool = True):

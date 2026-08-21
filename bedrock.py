@@ -5,26 +5,30 @@
 MINECRAFT BEDROCK PATTERN FINDER & REVERSE-ENGINEERING ENGINE
 ================================================================================
 Author   : Antigravity (Google DeepMind)
-Version  : 2.0.0 (High Performance - NumPy & Multiprocessing)
+Version  : 2.1.0 (Multi-version Support: 1.0 -> 1.21+)
 
 Description:
 ------------
 This script locates the exact (X, Y, Z) coordinates of a bedrock formation
-in Minecraft Java Edition (Nether roof/floor and Overworld) from:
-  1. World seed (or deterministic pre-1.18 calculation independent of world seed).
-  2. Target pattern:
-     - Text/Numeric matrix (depths 0..4, 123..127, or presence # / .).
+in Minecraft Java Edition from:
+  1. Minecraft Version (1.0-1.12.2 legacy, 1.13-1.17, 1.18+ modern).
+  2. World seed (when required by the version/dimension).
+  3. Target pattern:
+     - Text/Numeric matrix (depths 0..4, Y levels 123..127, 0..4, -64..-60, or presence # / .).
      - Screenshot/image cropped into a grid (brightness analysis and/or texture rotation).
-  3. Block texture orientation and rotation (via MathHelper.getCoordinateRandom).
+  4. Block texture orientation and rotation (via MathHelper.getCoordinateRandom).
 
-Features:
----------
-- Bit-exact emulation of Java Random PRNG (48-bit LCG): seed' = (seed * 0x5DEECE66D + 0xB) mod 2^48.
-- LCG Jump Tables matrix acceleration: O(1) calculation of LCG state per block.
-- Fast NumPy vectorization capable of scanning millions of chunks per second.
-- Parallel multiprocessing engine with ultra-fast early exit.
-- Automatic image analysis (PIL / NumPy): hole detection and texture rotation detection (0°, 90°, 180°, 270°).
-- Comprehensive and intuitive CLI interface via argparse.
+Supported Minecraft Versions:
+-----------------------------
+- 1.12 / legacy (1.0 - 1.12.2):
+    * Nether roof (Y=123..127) & floor (Y=0..4): 100% seed-independent.
+    * Overworld floor (Y=0..4): 100% seed-independent.
+- 1.13 - 1.17 (1.13 to 1.17.1):
+    * Nether roof & floor: 100% seed-independent in vanilla.
+    * Overworld floor (Y=0..4): supports world seed mixing (WorldGenRandom).
+- 1.18+ / modern (1.18 to 1.21+ Caves & Cliffs):
+    * Overworld floor shifted to Y=-64..-60 (negative Y levels).
+    * Nether roof (Y=123..127) & floor (Y=0..4).
 """
 
 import os
@@ -116,7 +120,7 @@ AK_TABLE, BK_TABLE = compute_lcg_jump_tables(512)
 def get_coordinate_random(x: int, y: int, z: int) -> int:
     """
     Exact equivalent of net.minecraft.util.math.MathHelper.getCoordinateRandom(x, y, z).
-    Used by Minecraft to select block model variants and texture rotations.
+    Used by Minecraft (1.8 to 1.21+) to select block model variants and texture rotations.
     """
     l = ((x * COORD_RAND_X_MULT) ^ (z * COORD_RAND_Z_MULT) ^ y) & UINT64_MASK
     l = (l * l * COORD_RAND_SQ_MULT + l * COORD_RAND_LIN_MULT) & UINT64_MASK
@@ -129,46 +133,76 @@ def get_texture_rotation_index(x: int, y: int, z: int) -> int:
     for a block located at world coordinates (x, y, z).
     """
     rnd = get_coordinate_random(x, y, z)
-    # Minecraft Java Edition Block Model variant index: (coord_random >> 16) & 3
     return int((rnd >> 16) & 3)
 
 
 # ==============================================================================
-# 3. MINECRAFT BEDROCK GENERATION
+# 3. MINECRAFT VERSION & DIMENSION SYSTEM
 # ==============================================================================
+
+class MinecraftVersion(Enum):
+    V1_12 = "1.12"            # 1.0 to 1.12.2 (Legacy, seed-independent bedrock)
+    V1_13_1_17 = "1.13-1.17"  # 1.13 to 1.17.1 (WorldGenRandom decoration seed support)
+    V1_18_PLUS = "1.18+"      # 1.18 to 1.21+ (Caves & Cliffs, negative Y Overworld)
+
+    @classmethod
+    def parse(cls, ver_str: str) -> 'MinecraftVersion':
+        v = ver_str.strip().lower()
+        if v in ("1.12", "1.12.2", "1.11", "1.10", "1.9", "1.8", "1.7", "legacy", "old"):
+            return cls.V1_12
+        elif v in ("1.13", "1.14", "1.15", "1.16", "1.16.5", "1.17", "1.17.1", "1.13-1.17", "1.14-1.17"):
+            return cls.V1_13_1_17
+        elif v in ("1.18", "1.18.2", "1.19", "1.20", "1.21", "1.18+", "modern", "new"):
+            return cls.V1_18_PLUS
+        else:
+            # Fallback parse numeric
+            try:
+                parts = [int(p) for p in v.split(".") if p.isdigit()]
+                if len(parts) >= 2:
+                    minor = parts[1]
+                    if minor <= 12:
+                        return cls.V1_12
+                    elif minor <= 17:
+                        return cls.V1_13_1_17
+                    else:
+                        return cls.V1_18_PLUS
+            except Exception:
+                pass
+            return cls.V1_12
+
 
 class DimensionMode(Enum):
     NETHER_ROOF = "nether-roof"      # Y=123..127 (Nether ceiling)
     NETHER_FLOOR = "nether-floor"    # Y=0..4 (Nether floor)
-    OVERWORLD = "overworld"          # Y=0..4 (Overworld floor pre-1.18)
+    OVERWORLD = "overworld"          # Y=0..4 (pre-1.18) or Y=-64..-60 (1.18+)
+
+
+def get_default_layer(mode: DimensionMode, version: MinecraftVersion) -> int:
+    """Returns the default base Y layer according to dimension and version."""
+    if mode == DimensionMode.NETHER_ROOF:
+        return 127
+    elif mode == DimensionMode.NETHER_FLOOR:
+        return 0
+    else:  # OVERWORLD
+        return -64 if version == MinecraftVersion.V1_18_PLUS else 0
 
 
 def get_chunk_bedrock_grid(
     chunk_x: int,
     chunk_z: int,
     mode: DimensionMode = DimensionMode.NETHER_ROOF,
+    version: MinecraftVersion = MinecraftVersion.V1_12,
     world_seed: Optional[int] = None
 ) -> List[int]:
     """
     Generates the flat 256-element list of bedrock depths/heights for a chunk.
     Indexing: index = x * 16 + z (x in 0..15, z in 0..15).
-
-    For NETHER_ROOF:
-      - Returns flat 256 list of integers d in [0..4].
-      - Bedrock is present for Y in [127 - d, 127].
-      - Y=127 is always bedrock (d >= 0).
-      - Y=126 is bedrock if d >= 1.
-      - Y=123 is bedrock if d == 4.
-
-    For NETHER_FLOOR & OVERWORLD:
-      - Returns flat 256 list of integers d in [0..4].
-      - Bedrock is present for Y in [0, d].
-      - Y=0 is always bedrock.
-      - Y=4 is bedrock if d == 4.
     """
-    if world_seed is not None and mode == DimensionMode.OVERWORLD:
+    # Seed calculation according to version
+    if version == MinecraftVersion.V1_13_1_17 and world_seed is not None and mode == DimensionMode.OVERWORLD:
         base_seed = (world_seed + (chunk_x * CHUNK_SEED_X_MULT) + (chunk_z * CHUNK_SEED_Z_MULT)) & LCG_MASK
     else:
+        # Classic deterministic chunk seed (1.12- and Nether 1.12-1.17)
         base_seed = (chunk_x * CHUNK_SEED_X_MULT + chunk_z * CHUNK_SEED_Z_MULT) & LCG_MASK
 
     s = (base_seed ^ LCG_MULTIPLIER) & LCG_MASK
@@ -233,13 +267,15 @@ class BedrockPattern:
     def __init__(
         self,
         mode: DimensionMode = DimensionMode.NETHER_ROOF,
+        version: MinecraftVersion = MinecraftVersion.V1_12,
         target_layer: Optional[int] = None,
         height_matrix: Optional[Union[List[List[Any]], np.ndarray]] = None,
         binary_matrix: Optional[Union[List[List[Any]], np.ndarray]] = None,
         rotation_matrix: Optional[Union[List[List[Any]], np.ndarray]] = None,
     ):
         self.mode = mode
-        self.target_layer = target_layer if target_layer is not None else (127 if mode == DimensionMode.NETHER_ROOF else 0)
+        self.version = version
+        self.target_layer = target_layer if target_layer is not None else get_default_layer(mode, version)
         self.constraints: List[PatternConstraint] = []
         self.width = 0
         self.height = 0
@@ -263,6 +299,8 @@ class BedrockPattern:
                 d = int(val)
                 if self.mode == DimensionMode.NETHER_ROOF and d >= 120:
                     d = 127 - d  # Y=127 -> depth 0, Y=126 -> depth 1, etc.
+                elif self.mode == DimensionMode.OVERWORLD and self.version == MinecraftVersion.V1_18_PLUS and d < 0:
+                    d = d - (-64)  # Y=-64 -> depth 0, Y=-63 -> depth 1, etc.
                 self.constraints.append(PatternConstraint(dx=r, dz=c, expected_depth=d))
 
     def _load_from_binary(self, matrix: Union[List[List[Any]], np.ndarray], layer: int) -> None:
@@ -282,16 +320,15 @@ class BedrockPattern:
 
                 if self.mode == DimensionMode.NETHER_ROOF:
                     required_depth = 127 - layer
-                    if is_bedrock:
-                        self.constraints.append(PatternConstraint(dx=r, dz=c, min_depth=required_depth))
-                    else:
-                        self.constraints.append(PatternConstraint(dx=r, dz=c, max_depth=required_depth - 1))
+                elif self.mode == DimensionMode.OVERWORLD and self.version == MinecraftVersion.V1_18_PLUS:
+                    required_depth = layer - (-64)
                 else:
                     required_depth = layer
-                    if is_bedrock:
-                        self.constraints.append(PatternConstraint(dx=r, dz=c, min_depth=required_depth))
-                    else:
-                        self.constraints.append(PatternConstraint(dx=r, dz=c, max_depth=required_depth - 1))
+
+                if is_bedrock:
+                    self.constraints.append(PatternConstraint(dx=r, dz=c, min_depth=required_depth))
+                else:
+                    self.constraints.append(PatternConstraint(dx=r, dz=c, max_depth=required_depth - 1))
 
     def _apply_rotations(self, rot_matrix: Union[List[List[Any]], np.ndarray]) -> None:
         mat = np.array(rot_matrix)
@@ -315,7 +352,7 @@ class BedrockPattern:
         if k == 0:
             return self
 
-        new_pattern = BedrockPattern(mode=self.mode, target_layer=self.target_layer)
+        new_pattern = BedrockPattern(mode=self.mode, version=self.version, target_layer=self.target_layer)
         if k == 1:
             new_h, new_w = self.width, self.height
             for c in self.constraints:
@@ -371,7 +408,8 @@ class ImagePatternExtractor:
         grid_rows: int = 0,
         grid_cols: int = 0,
         mode: DimensionMode = DimensionMode.NETHER_ROOF,
-        target_layer: int = 127,
+        version: MinecraftVersion = MinecraftVersion.V1_12,
+        target_layer: Optional[int] = None,
         detect_textures: bool = False,
         reference_texture_path: Optional[str] = None
     ) -> BedrockPattern:
@@ -418,6 +456,7 @@ class ImagePatternExtractor:
 
         pattern = BedrockPattern(
             mode=mode,
+            version=version,
             target_layer=target_layer,
             binary_matrix=binary_matrix,
             rotation_matrix=rotation_matrix
@@ -486,14 +525,11 @@ class ImagePatternExtractor:
 def parse_pattern_from_string_or_file(
     content: str,
     mode: DimensionMode = DimensionMode.NETHER_ROOF,
+    version: MinecraftVersion = MinecraftVersion.V1_12,
     target_layer: Optional[int] = None
 ) -> BedrockPattern:
     """
     Parses a pattern from an inline string or file path (JSON / plain text).
-    Supported formats:
-      - Text grid with `#` (solid), `.` (hole/empty), `?` (wildcard/unknown)
-      - Numeric grid of depths 0..4 or Y levels 123..127
-      - JSON list-of-lists [[...], [...]]
     """
     if os.path.exists(content):
         with open(content, "r", encoding="utf-8") as f:
@@ -508,18 +544,18 @@ def parse_pattern_from_string_or_file(
                 first_row = data[0] if data else []
                 first_val = first_row[0] if first_row else 0
                 if isinstance(first_val, (int, float)):
-                    return BedrockPattern(mode=mode, target_layer=target_layer, height_matrix=data)
+                    return BedrockPattern(mode=mode, version=version, target_layer=target_layer, height_matrix=data)
                 else:
-                    return BedrockPattern(mode=mode, target_layer=target_layer, binary_matrix=data)
+                    return BedrockPattern(mode=mode, version=version, target_layer=target_layer, binary_matrix=data)
             elif isinstance(data, dict):
                 h_mat = data.get("heights") or data.get("pattern")
                 b_mat = data.get("binary")
                 rot_mat = data.get("rotations")
                 lay = data.get("layer", target_layer)
                 if h_mat:
-                    return BedrockPattern(mode=mode, target_layer=lay, height_matrix=h_mat, rotation_matrix=rot_mat)
+                    return BedrockPattern(mode=mode, version=version, target_layer=lay, height_matrix=h_mat, rotation_matrix=rot_mat)
                 elif b_mat:
-                    return BedrockPattern(mode=mode, target_layer=lay, binary_matrix=b_mat, rotation_matrix=rot_mat)
+                    return BedrockPattern(mode=mode, version=version, target_layer=lay, binary_matrix=b_mat, rotation_matrix=rot_mat)
         except Exception:
             pass
 
@@ -528,19 +564,19 @@ def parse_pattern_from_string_or_file(
         raise ValueError("No valid pattern found in input.")
 
     first_tokens = lines[0].split()
-    is_numeric = all(tok.isdigit() or tok == "?" or tok == "-1" for tok in first_tokens if tok) and len(first_tokens) > 1
+    is_numeric = any(tok.lstrip("-").isdigit() for tok in first_tokens if tok) and len(first_tokens) > 1
 
     if is_numeric:
         grid: List[List[Any]] = []
         for line in lines:
             row = []
             for tok in line.split():
-                if tok == "?" or tok == "-1":
+                if tok == "?" or tok == "x":
                     row.append(None)
                 else:
                     row.append(int(tok))
             grid.append(row)
-        return BedrockPattern(mode=mode, target_layer=target_layer, height_matrix=grid)
+        return BedrockPattern(mode=mode, version=version, target_layer=target_layer, height_matrix=grid)
     else:
         grid = []
         for line in lines:
@@ -554,7 +590,7 @@ def parse_pattern_from_string_or_file(
                 else:
                     row.append("?")
             grid.append(row)
-        return BedrockPattern(mode=mode, target_layer=target_layer, binary_matrix=grid)
+        return BedrockPattern(mode=mode, version=version, target_layer=target_layer, binary_matrix=grid)
 
 
 # ==============================================================================
@@ -576,12 +612,13 @@ def _worker_scan_chunk_batch(
         int, int, int, int,                  # min_cx, max_cx, min_cz, max_cz
         List[Dict[str, Any]],                # serialized constraints
         int,                                 # mode_val (1: NETHER_ROOF, 2: NETHER_FLOOR, 3: OVERWORLD)
+        str,                                 # version_val ("1.12", "1.13-1.17", "1.18+")
         Optional[int],                       # world_seed
         int                                  # rotation_deg
     ]
 ) -> List[Tuple[int, int, int, int, int, int]]:
     """Worker process function scanning a batch of chunks."""
-    min_cx, max_cx, min_cz, max_cz, serialized_constraints, mode_val, world_seed, rot_deg = args
+    min_cx, max_cx, min_cz, max_cz, serialized_constraints, mode_val, version_str, world_seed, rot_deg = args
 
     constraints = [
         PatternConstraint(
@@ -601,6 +638,7 @@ def _worker_scan_chunk_batch(
         else DimensionMode.NETHER_FLOOR if mode_val == 2
         else DimensionMode.OVERWORLD
     )
+    version = MinecraftVersion(version_str)
 
     chunk_cache: Dict[Tuple[int, int], List[int]] = {}
 
@@ -608,12 +646,14 @@ def _worker_scan_chunk_batch(
         k = (cx, cz)
         g = chunk_cache.get(k)
         if g is None:
-            g = get_chunk_bedrock_grid(cx, cz, mode, world_seed)
+            g = get_chunk_bedrock_grid(cx, cz, mode, version, world_seed)
             chunk_cache[k] = g
         return g
 
     anchor = constraints[0]
     matches: List[Tuple[int, int, int, int, int, int]] = []
+
+    target_y = get_default_layer(mode, version)
 
     for cx in range(min_cx, max_cx + 1):
         for cz in range(min_cz, max_cz + 1):
@@ -667,7 +707,6 @@ def _worker_scan_chunk_batch(
 
                     # 3. Texture rotation validation if specified
                     rot_failed = False
-                    target_y = 127 if mode == DimensionMode.NETHER_ROOF else 0
                     for c in constraints:
                         if c.expected_rotation is not None:
                             wx = x0 + c.dx
@@ -679,8 +718,7 @@ def _worker_scan_chunk_batch(
                     if rot_failed:
                         continue
 
-                    y_coord = 127 if mode == DimensionMode.NETHER_ROOF else 0
-                    matches.append((x0, y_coord, z0, x0 >> 4, z0 >> 4, rot_deg))
+                    matches.append((x0, target_y, z0, x0 >> 4, z0 >> 4, rot_deg))
 
         if len(chunk_cache) > 4000:
             chunk_cache.clear()
@@ -725,7 +763,9 @@ class BedrockSearchEngine:
 
         print(f"\n" + "=" * 70)
         print(f"[*] STARTING PARALLEL BEDROCK SCAN")
-        print(f"[*] Mode           : {self.pattern.mode.value}")
+        print(f"[*] Minecraft Ver  : {self.pattern.version.value}")
+        print(f"[*] Dimension/Mode : {self.pattern.mode.value} (Base Layer Y={self.pattern.target_layer})")
+        print(f"[*] World Seed     : {self.world_seed if self.world_seed is not None else 'None (Deterministic / Seed-Independent)'}")
         print(f"[*] Block Bounds   : X:[{min_x:,} .. {max_x:,}], Z:[{min_z:,} .. {max_z:,}]")
         print(f"[*] Chunk Bounds   : CX:[{min_cx:,} .. {max_cx:,}], CZ:[{min_cz:,} .. {max_cz:,}]")
         print(f"[*] Total Chunks   : {total_chunks:,} (~{total_chunks * 256:,} blocks)")
@@ -745,6 +785,7 @@ class BedrockSearchEngine:
             else 2 if self.pattern.mode == DimensionMode.NETHER_FLOOR
             else 3
         )
+        version_str = self.pattern.version.value
 
         tasks = []
         for pat, deg in patterns_to_test:
@@ -762,7 +803,7 @@ class BedrockSearchEngine:
                 cx_end = min(cx + batch_size - 1, max_cx)
                 for cz in range(min_cz, max_cz + 1, batch_size):
                     cz_end = min(cz + batch_size - 1, max_cz)
-                    tasks.append((cx, cx_end, cz, cz_end, serialized_constraints, mode_val, self.world_seed, deg))
+                    tasks.append((cx, cx_end, cz, cz_end, serialized_constraints, mode_val, version_str, self.world_seed, deg))
 
         start_time = time.perf_counter()
         results: List[MatchResult] = []
@@ -798,10 +839,18 @@ class BedrockSearchEngine:
 # 8. VISUALIZATION & BENCHMARK UTILITIES
 # ==============================================================================
 
-def print_chunk_bedrock_map(chunk_x: int, chunk_z: int, mode: DimensionMode, layer: int = 127) -> None:
+def print_chunk_bedrock_map(
+    chunk_x: int,
+    chunk_z: int,
+    mode: DimensionMode,
+    version: MinecraftVersion,
+    layer: Optional[int] = None
+) -> None:
     """Prints the ASCII map of a chunk's bedrock layer."""
-    grid = get_chunk_bedrock_grid(chunk_x, chunk_z, mode)
-    print(f"\nChunk ({chunk_x}, {chunk_z}) Map - Mode: {mode.value} (Y={layer}):")
+    if layer is None:
+        layer = get_default_layer(mode, version)
+    grid = get_chunk_bedrock_grid(chunk_x, chunk_z, mode, version)
+    print(f"\nChunk ({chunk_x}, {chunk_z}) Map - Mode: {mode.value} | Version: {version.value} (Y={layer}):")
     print("    " + " ".join(f"{z:X}" for z in range(16)))
     print("   +" + "-" * 32)
     for x in range(16):
@@ -810,6 +859,8 @@ def print_chunk_bedrock_map(chunk_x: int, chunk_z: int, mode: DimensionMode, lay
             depth = grid[x * 16 + z]
             if mode == DimensionMode.NETHER_ROOF:
                 is_solid = (127 - depth <= layer)
+            elif mode == DimensionMode.OVERWORLD and version == MinecraftVersion.V1_18_PLUS:
+                is_solid = (-64 + depth >= layer)
             else:
                 is_solid = (depth >= layer)
             row_chars.append("# " if is_solid else ". ")
@@ -852,30 +903,37 @@ def main():
         description="Minecraft Bedrock Reverse-Engineering & Coordinate Finder (Java Edition).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Supported Versions:
+-------------------
+  1.12, 1.12.2, legacy  : Minecraft 1.0 - 1.12.2 (Nether & Overworld bedrock is 100% seed-independent).
+  1.13-1.17, 1.16.5     : Minecraft 1.13 - 1.17.1 (Nether seed-independent, Overworld uses decoration seed).
+  1.18+, 1.20, modern   : Minecraft 1.18 - 1.21+ (Caves & Cliffs, Overworld bedrock at Y=-64..-60).
+
 Usage Examples:
 ---------------
-1. Search via inline text matrix (depths or presence #/.):
-   python3 bedrock.py --matrix "4 3 2 1 0\\n3 4 4 2 1\\n0 1 2 3 4" --radius 5000
+1. Search in Minecraft 1.12 Nether roof (seed-independent):
+   python3 bedrock.py --version 1.12 --mode nether-roof --matrix "# . # . .\\n# . # . .\\n# # # . ." --radius 5000
 
-2. Search via screenshot / cropped image:
-   python3 bedrock.py --image screen.png --radius 20000 --all-rotations
+2. Search in Minecraft 1.18+ Overworld at negative Y (Y=-64):
+   python3 bedrock.py --version 1.18+ --mode overworld --matrix "4 3 2 1 0" --radius 10000
 
-3. Search with specific dimension mode and layer:
-   python3 bedrock.py --matrix pattern.txt --mode nether-roof --layer 127 --radius 10000
+3. Search from a screenshot with automatic rotation testing:
+   python3 bedrock.py --image screenshot.png --version 1.12 --mode nether-roof --all-rotations
 
-4. Export a chunk's bedrock layout:
-   python3 bedrock.py --export-chunk 85 30 --mode overworld
+4. Inspect chunk bedrock map:
+   python3 bedrock.py --export-chunk 85 30 --version 1.12 --mode nether-roof --layer 125
 
 5. Run performance benchmark:
    python3 bedrock.py --benchmark
         """
     )
 
+    parser.add_argument("--version", "-v", type=str, default="1.12", help="Minecraft version (e.g. '1.12', '1.16.5', '1.18+', '1.20', 'legacy'). Default: 1.12.")
     parser.add_argument("--matrix", "-p", type=str, help="Pattern as inline string or file path (.txt / .json).")
     parser.add_argument("--image", "-i", type=str, help="Path to bedrock screenshot or crop image.")
-    parser.add_argument("--seed", "-s", type=int, default=None, help="World Seed (optional in 1.12- mode).")
+    parser.add_argument("--seed", "-s", type=int, default=None, help="World Seed (optional in seed-independent modes like 1.12-).")
     parser.add_argument("--mode", "-m", type=str, choices=["nether-roof", "nether-floor", "overworld"], default="nether-roof", help="Target dimension / layer (default: nether-roof).")
-    parser.add_argument("--layer", "-y", type=int, default=None, help="Target Y layer (e.g. 127, 126, 4, 3...).")
+    parser.add_argument("--layer", "-y", type=int, default=None, help="Target Y layer (e.g. 127, 126, 4, 3, -64, -63...).")
     parser.add_argument("--radius", "-r", type=int, default=10000, help="Search radius in blocks around center (default: 10000).")
     parser.add_argument("--radius-chunks", type=int, default=None, help="Search radius in chunks.")
     parser.add_argument("--center", "-c", type=int, nargs=2, default=[0, 0], metavar=("X", "Z"), help="Search center X Z (default: 0 0).")
@@ -895,13 +953,14 @@ Usage Examples:
         run_benchmark(threads=args.threads or (os.cpu_count() or 4))
         return
 
-    # Dimension mode
+    # Parse version & dimension mode
+    version = MinecraftVersion.parse(args.version)
     mode = DimensionMode(args.mode)
 
-    # Chunk export
+    # Export a chunk
     if args.export_chunk:
         cx, cz = args.export_chunk
-        print_chunk_bedrock_map(cx, cz, mode, args.layer or (127 if mode == DimensionMode.NETHER_ROOF else 0))
+        print_chunk_bedrock_map(cx, cz, mode, version, args.layer)
         return
 
     # Check inputs
@@ -912,7 +971,7 @@ Usage Examples:
 
     # Load pattern
     if args.matrix:
-        pattern = parse_pattern_from_string_or_file(args.matrix, mode=mode, target_layer=args.layer)
+        pattern = parse_pattern_from_string_or_file(args.matrix, mode=mode, version=version, target_layer=args.layer)
     else:
         grid_rows, grid_cols = args.grid_size if args.grid_size else (0, 0)
         pattern = ImagePatternExtractor.extract_from_image(
@@ -920,7 +979,8 @@ Usage Examples:
             grid_rows=grid_rows,
             grid_cols=grid_cols,
             mode=mode,
-            target_layer=args.layer or (127 if mode == DimensionMode.NETHER_ROOF else 0),
+            version=version,
+            target_layer=args.layer,
             detect_textures=args.detect_textures,
             reference_texture_path=args.reference_texture
         )

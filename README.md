@@ -1,18 +1,29 @@
 # Minecraft Bedrock Pattern Finder & Reverse-Engineering Engine
 
-A high-performance, standalone Python tool to locate exact $(X, Y, Z)$ coordinates of bedrock formations in Minecraft Java Edition from world seeds, pattern matrices, or screenshots.
+A high-performance, standalone Python tool to locate exact $(X, Y, Z)$ coordinates of bedrock formations in Minecraft Java Edition across multiple versions (1.0 to 1.21+) from world seeds, pattern matrices, or screenshots.
+
+---
+
+## Supported Minecraft Versions
+
+| Version Flag | Version Range | Nether Roof ($Y=123..127$) | Nether Floor ($Y=0..4$) | Overworld Floor |
+|---|---|---|---|---|
+| `--version 1.12` *(default)* | 1.0 - 1.12.2 (Legacy) | ❌ Seed-independent | ❌ Seed-independent | ❌ Seed-independent ($Y=0..4$) |
+| `--version 1.13-1.17` | 1.13 - 1.17.1 | ❌ Seed-independent | ❌ Seed-independent |  World seed dependent ($Y=0..4$) |
+| `--version 1.18+` | 1.18 - 1.21+ (Caves & Cliffs) | ❌ Seed-independent | ❌ Seed-independent |  Negative depths ($Y=-64..-60$) |
 
 ---
 
 ## Features
 
+- **Multi-Version Architecture:** Seamlessly adapt bedrock layers, depths, and coordinate spaces between legacy (1.12-), intermediate (1.13-1.17), and modern (1.18+) Minecraft versions.
 - **Bit-Exact Java LCG PRNG Emulation:** Replicates `java.util.Random` 48-bit Linear Congruential Generator.
 - **LCG Jump Tables:** $O(1)$ computation of LCG states for arbitrary block offsets within chunks.
 - **High-Throughput Vectorization:** NumPy-accelerated scanning capable of processing millions of chunks per second.
 - **Parallel Multiprocessing Engine:** Multi-core search with cascaded early-exit filters (80% rejection on 1st anchor, 96% on 2nd, 99.2% on 3rd).
 - **Coordinate Random & Texture Rotation:** Emulates `MathHelper.getCoordinateRandom(x, y, z)` to extract and match block texture rotations (0°, 90°, 180°, 270°).
 - **Flexible Input Formats:**
-  - Text grids: numeric depths (`0..4`, `123..127`) or binary presence (`#` for bedrock, `.` for hole/air, `?` for wildcard).
+  - Text grids: numeric depths (`0..4`, `123..127`, `-64..-60`) or binary presence (`#` for bedrock, `.` for hole/air, `?` for wildcard).
   - JSON format (`[[...], [...]]`).
   - Image / Screenshot analysis via PIL & NumPy (automatic brightness thresholding & normalized cross-correlation for texture rotation).
 - **Orientation Invariance (`--all-rotations`):** Automatically tests all 4 cardinal orientations (0°, 90°, 180°, 270°).
@@ -29,38 +40,49 @@ pip install -r requirements.txt
 
 ---
 
-## Usage
+## Usage Examples
 
-### 1. Search with a Text Matrix
+### 1. Search in Minecraft 1.12 Nether Roof (Seed-Independent)
 ```bash
-python3 bedrock.py --matrix "# . # . .
+python3 bedrock.py --version 1.12 --mode nether-roof --layer 125 --matrix "# . # . .
 # . # . .
 # # # . .
 # # # # #
-. # . . ." --mode nether-roof --layer 125 --radius 5000
+. # . . ." --radius 5000
 ```
 
-### 2. Search with All Cardinal Rotations (0°, 90°, 180°, 270°)
+### 2. Search in Minecraft 1.18+ Overworld (Negative Y: -64..-60)
 ```bash
-python3 bedrock.py --matrix pattern.txt --mode overworld --radius 10000 --all-rotations
+python3 bedrock.py --version 1.18+ --mode overworld --layer -62 --matrix "# . . #
+# # # #
+# # . #" --radius 10000
 ```
 
-### 3. Search from a Screenshot / Cropped Image
+### 3. Search with All Cardinal Rotations (0°, 90°, 180°, 270°)
 ```bash
-python3 bedrock.py --image screenshot.png --grid-size 8 8 --mode nether-roof --layer 127 --radius 20000
+python3 bedrock.py --matrix pattern.txt --version 1.12 --mode overworld --radius 10000 --all-rotations
 ```
 
-### 4. Search with Texture Rotation Detection
+### 4. Search from a Screenshot / Cropped Image
+```bash
+python3 bedrock.py --image screenshot.png --version 1.12 --grid-size 8 8 --mode nether-roof --layer 127 --radius 20000
+```
+
+### 5. Search with Texture Rotation Detection
 ```bash
 python3 bedrock.py --image crop.png --detect-textures --radius 10000
 ```
 
-### 5. Inspect / Export a Chunk Bedrock Map
+### 6. Inspect / Export a Chunk Bedrock Map
 ```bash
-python3 bedrock.py --export-chunk 85 30 --mode nether-roof --layer 125
+# Export 1.18+ Overworld chunk at Y=-62
+python3 bedrock.py --export-chunk 85 30 --version 1.18+ --mode overworld --layer -62
+
+# Export 1.12 Nether roof chunk at Y=125
+python3 bedrock.py --export-chunk 85 30 --version 1.12 --mode nether-roof --layer 125
 ```
 
-### 6. Performance Benchmark
+### 7. Performance Benchmark
 ```bash
 python3 bedrock.py --benchmark
 ```
@@ -71,11 +93,12 @@ python3 bedrock.py --benchmark
 
 | Option | Description |
 |---|---|
+| `--version`, `-v` | Minecraft version: `1.12` (default), `1.13-1.17`, `1.18+`, `1.16.5`, `1.20`, etc. |
 | `--matrix`, `-p` | Pattern as inline string or file path (`.txt` / `.json`) |
 | `--image`, `-i` | Path to screenshot or cropped bedrock image |
-| `--seed`, `-s` | World Seed (optional in pre-1.18 deterministic mode) |
+| `--seed`, `-s` | World Seed (optional in seed-independent modes like 1.12-) |
 | `--mode`, `-m` | Target dimension: `nether-roof` (default), `nether-floor`, `overworld` |
-| `--layer`, `-y` | Target Y layer (e.g. 127, 126, 4, 3...) |
+| `--layer`, `-y` | Target Y layer (e.g. 127, 126, 4, 3, -64, -63...) |
 | `--radius`, `-r` | Search radius in blocks around center (default: 10000) |
 | `--radius-chunks` | Search radius in chunks |
 | `--center`, `-c` | Search center `X Z` (default: 0 0) |

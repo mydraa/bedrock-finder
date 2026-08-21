@@ -33,6 +33,12 @@
 </head>
 <body class="min-h-screen flex flex-col bg-[#0b0f19] text-gray-100 antialiased selection:bg-indigo-500 selection:text-white">
 
+    <!-- Toast Notification Container -->
+    <div id="toastNotification" class="fixed bottom-5 right-5 z-50 transform translate-y-10 opacity-0 pointer-events-none transition-all duration-300 bg-[#161f36] border border-[#2d3a5a] text-white px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-medium">
+        <i id="toastIcon" class="fa-solid fa-check text-emerald-400 text-sm"></i>
+        <span id="toastMessage">Settings saved</span>
+    </div>
+
     <!-- Header -->
     <header class="bg-[#101726]/90 border-b border-[#232f48] backdrop-blur-md px-6 py-3.5 flex items-center justify-between sticky top-0 z-50 shadow-lg">
         <div class="flex items-center space-x-3.5">
@@ -71,7 +77,14 @@
                     <h2 class="text-xs font-bold text-gray-300 uppercase tracking-wider flex items-center gap-2">
                         <i class="fa-solid fa-sliders text-indigo-400"></i> World Configuration
                     </h2>
-                    <span class="text-[11px] text-gray-400" id="threadInfo">Auto Cores</span>
+                    <div class="flex items-center space-x-2">
+                        <span id="savedIndicator" class="text-[10px] text-emerald-400 opacity-0 transition-opacity duration-300 flex items-center gap-1 font-medium">
+                            <i class="fa-solid fa-check"></i> Saved
+                        </span>
+                        <button onclick="resetAllSettings()" title="Reset all settings to default" class="text-xs bg-[#1a233a] hover:bg-rose-500/20 hover:border-rose-500/40 text-gray-300 hover:text-rose-300 px-2.5 py-1 rounded-lg border border-[#2d3a5a] transition flex items-center gap-1.5 font-medium">
+                            <i class="fa-solid fa-arrow-rotate-left text-[11px]"></i> Reset
+                        </button>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">

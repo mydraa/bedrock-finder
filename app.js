@@ -2,6 +2,8 @@
  * Minecraft Bedrock Finder — Main Frontend Application Logic
  */
 
+const STORAGE_KEY = 'bedrock_finder_settings_v1';
+
 // Application State
 let currentGridSize = 5;
 let gridState = []; // 0: Hole, 1: Solid Bedrock, 2: Wildcard
@@ -77,11 +79,23 @@ const PRESETS = {
 
 // Initialize Application on Page Load
 document.addEventListener('DOMContentLoaded', () => {
-    initGrid(currentGridSize);
     updateThreadInfo();
-    onConfigChange();
-    renderChunkMap();
     initDropZone();
+
+    // 1. Try to load cached settings from localStorage
+    const hasCachedState = loadState();
+
+    // 2. If no cached state, initialize default grid
+    if (!hasCachedState) {
+        initGrid(currentGridSize);
+        onConfigChange(false);
+    } else {
+        renderGrid();
+        onConfigChange(false);
+    }
+
+    renderChunkMap();
+    attachAutoSaveListeners();
 });
 
 function updateThreadInfo() {
@@ -91,7 +105,205 @@ function updateThreadInfo() {
 }
 
 // ==============================================================================
-// 1. INTERACTIVE GRID EDITOR
+// 1. CACHE & LOCALSTORAGE PERSISTENCE SYSTEM
+// ==============================================================================
+
+let saveTimeout = null;
+function triggerAutoSave() {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(saveState, 250);
+}
+
+function saveState() {
+    try {
+        const state = {
+            version: document.getElementById('versionSelect')?.value,
+            mode: document.getElementById('modeSelect')?.value,
+            layer: document.getElementById('layerInput')?.value,
+            seed: document.getElementById('seedInput')?.value,
+            radius: document.getElementById('radiusInput')?.value,
+            centerX: document.getElementById('centerX')?.value,
+            centerZ: document.getElementById('centerZ')?.value,
+            allRotations: document.getElementById('allRotationsCheck')?.checked,
+            tab: currentTab,
+            gridSize: currentGridSize,
+            gridState: gridState,
+            rawText: document.getElementById('rawTextInput')?.value,
+            imgRows: document.getElementById('imgRows')?.value,
+            imgCols: document.getElementById('imgCols')?.value,
+            detectTextures: document.getElementById('detectTexturesCheck')?.checked,
+            inspectCx: document.getElementById('inspectCx')?.value,
+            inspectCz: document.getElementById('inspectCz')?.value,
+            chunkLayer: document.getElementById('chunkLayerSlider')?.value,
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        showSavedIndicator();
+    } catch (e) {
+        console.warn('Could not save state to localStorage:', e);
+    }
+}
+
+function loadState() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const state = JSON.parse(raw);
+
+        if (state.version && document.getElementById('versionSelect')) {
+            document.getElementById('versionSelect').value = state.version;
+        }
+        if (state.mode && document.getElementById('modeSelect')) {
+            document.getElementById('modeSelect').value = state.mode;
+        }
+        if (state.layer !== undefined && document.getElementById('layerInput')) {
+            document.getElementById('layerInput').value = state.layer;
+        }
+        if (state.seed !== undefined && document.getElementById('seedInput')) {
+            document.getElementById('seedInput').value = state.seed;
+        }
+        if (state.radius !== undefined && document.getElementById('radiusInput')) {
+            document.getElementById('radiusInput').value = state.radius;
+        }
+        if (state.centerX !== undefined && document.getElementById('centerX')) {
+            document.getElementById('centerX').value = state.centerX;
+        }
+        if (state.centerZ !== undefined && document.getElementById('centerZ')) {
+            document.getElementById('centerZ').value = state.centerZ;
+        }
+        if (state.allRotations !== undefined && document.getElementById('allRotationsCheck')) {
+            document.getElementById('allRotationsCheck').checked = state.allRotations;
+        }
+        if (state.rawText !== undefined && document.getElementById('rawTextInput')) {
+            document.getElementById('rawTextInput').value = state.rawText;
+        }
+        if (state.imgRows !== undefined && document.getElementById('imgRows')) {
+            document.getElementById('imgRows').value = state.imgRows;
+        }
+        if (state.imgCols !== undefined && document.getElementById('imgCols')) {
+            document.getElementById('imgCols').value = state.imgCols;
+        }
+        if (state.detectTextures !== undefined && document.getElementById('detectTexturesCheck')) {
+            document.getElementById('detectTexturesCheck').checked = state.detectTextures;
+        }
+        if (state.inspectCx !== undefined && document.getElementById('inspectCx')) {
+            document.getElementById('inspectCx').value = state.inspectCx;
+        }
+        if (state.inspectCz !== undefined && document.getElementById('inspectCz')) {
+            document.getElementById('inspectCz').value = state.inspectCz;
+        }
+        if (state.chunkLayer !== undefined && document.getElementById('chunkLayerSlider')) {
+            document.getElementById('chunkLayerSlider').value = state.chunkLayer;
+            document.getElementById('chunkLayerValue').innerText = state.chunkLayer;
+        }
+
+        if (state.gridSize && state.gridState && Array.isArray(state.gridState)) {
+            currentGridSize = state.gridSize;
+            if (document.getElementById('gridSizeSelect')) {
+                document.getElementById('gridSizeSelect').value = currentGridSize;
+            }
+            gridState = state.gridState;
+        }
+
+        if (state.tab) {
+            switchTab(state.tab, false);
+        }
+
+        return true;
+    } catch (e) {
+        console.warn('Could not load state from localStorage:', e);
+        return false;
+    }
+}
+
+function resetAllSettings() {
+    if (!confirm('Reset all parameters and clear grid cache?')) {
+        return;
+    }
+
+    try {
+        localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {}
+
+    // Reset All Input Fields to default
+    document.getElementById('versionSelect').value = '1.12';
+    document.getElementById('modeSelect').value = 'nether-roof';
+    document.getElementById('layerInput').value = 125;
+    document.getElementById('seedInput').value = '';
+    document.getElementById('radiusInput').value = 5000;
+    document.getElementById('centerX').value = 0;
+    document.getElementById('centerZ').value = 0;
+    document.getElementById('allRotationsCheck').checked = true;
+    document.getElementById('rawTextInput').value = '';
+    document.getElementById('imgRows').value = 5;
+    document.getElementById('imgCols').value = 5;
+    document.getElementById('detectTexturesCheck').checked = false;
+    document.getElementById('inspectCx').value = 0;
+    document.getElementById('inspectCz').value = 0;
+    document.getElementById('chunkLayerSlider').value = 125;
+    document.getElementById('gridSizeSelect').value = 5;
+
+    clearImage();
+    initGrid(5);
+    onConfigChange(false);
+    switchTab('grid', false);
+    renderChunkMap();
+
+    showToast('Settings reset to defaults', 'fa-arrow-rotate-left', 'text-rose-400');
+}
+
+function attachAutoSaveListeners() {
+    const inputs = [
+        'versionSelect', 'modeSelect', 'layerInput', 'seedInput',
+        'radiusInput', 'centerX', 'centerZ', 'allRotationsCheck',
+        'rawTextInput', 'imgRows', 'imgCols', 'detectTexturesCheck',
+        'inspectCx', 'inspectCz'
+    ];
+
+    inputs.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('input', triggerAutoSave);
+            el.addEventListener('change', triggerAutoSave);
+        }
+    });
+}
+
+let savedIndicatorTimeout = null;
+function showSavedIndicator() {
+    const indicator = document.getElementById('savedIndicator');
+    if (!indicator) return;
+    indicator.classList.remove('opacity-0');
+    indicator.classList.add('opacity-100');
+
+    if (savedIndicatorTimeout) clearTimeout(savedIndicatorTimeout);
+    savedIndicatorTimeout = setTimeout(() => {
+        indicator.classList.remove('opacity-100');
+        indicator.classList.add('opacity-0');
+    }, 1200);
+}
+
+let toastTimeout = null;
+function showToast(message, icon = 'fa-check', colorClass = 'text-emerald-400') {
+    const toast = document.getElementById('toastNotification');
+    const toastMsg = document.getElementById('toastMessage');
+    const toastIcon = document.getElementById('toastIcon');
+    if (!toast || !toastMsg) return;
+
+    toastMsg.innerText = message;
+    toastIcon.className = `fa-solid ${icon} ${colorClass} text-sm`;
+
+    toast.classList.remove('translate-y-10', 'opacity-0', 'pointer-events-none');
+    toast.classList.add('translate-y-0', 'opacity-100');
+
+    if (toastTimeout) clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => {
+        toast.classList.remove('translate-y-0', 'opacity-100');
+        toast.classList.add('translate-y-10', 'opacity-0', 'pointer-events-none');
+    }, 2500);
+}
+
+// ==============================================================================
+// 2. INTERACTIVE GRID EDITOR
 // ==============================================================================
 
 function initGrid(size) {
@@ -127,6 +339,7 @@ function resizeGrid(newSize) {
     );
 
     renderGrid();
+    triggerAutoSave();
 }
 
 function renderGrid() {
@@ -153,16 +366,17 @@ function renderGrid() {
                 e.preventDefault();
                 isMouseDown = true;
                 // Cycle: 1 (Solid #) -> 0 (Hole .) -> 2 (Wildcard ?) -> 1
-                gridState[r][c] = (gridState[r][c] + 2) % 3; // 1->0->2->1
-                if (gridState[r][c] === 3) gridState[r][c] = 0;
+                gridState[r][c] = (gridState[r][c] + 2) % 3;
                 dragVal = gridState[r][c];
                 updateCellElement(cell, gridState[r][c]);
+                triggerAutoSave();
             };
 
             cell.onmouseenter = () => {
                 if (isMouseDown && dragVal !== null) {
                     gridState[r][c] = dragVal;
                     updateCellElement(cell, gridState[r][c]);
+                    triggerAutoSave();
                 }
             };
 
@@ -192,6 +406,7 @@ function clearGrid(val) {
         }
     }
     renderGrid();
+    triggerAutoSave();
 }
 
 function loadPreset(name) {
@@ -203,20 +418,22 @@ function loadPreset(name) {
     document.getElementById('layerInput').value = p.layer;
     document.getElementById('gridSizeSelect').value = p.size;
 
-    onConfigChange();
+    onConfigChange(false);
 
     currentGridSize = p.size;
     gridState = p.matrix.map(row => [...row]);
     renderGrid();
-    switchTab('grid');
+    switchTab('grid', false);
     document.getElementById('presetSelect').value = '';
+    triggerAutoSave();
+    showToast(`Loaded preset: ${name}`, 'fa-sparkles', 'text-indigo-400');
 }
 
 // ==============================================================================
-// 2. CONFIGURATION & DIMENSION HANDLERS
+// 3. CONFIGURATION & DIMENSION HANDLERS
 // ==============================================================================
 
-function onConfigChange() {
+function onConfigChange(autoAdjustLayer = true) {
     const mode = document.getElementById('modeSelect').value;
     const version = document.getElementById('versionSelect').value;
     const layerInput = document.getElementById('layerInput');
@@ -229,12 +446,18 @@ function onConfigChange() {
         seedHint.innerText = 'Seed-Independent';
         slider.min = 123;
         slider.max = 127;
+        if (autoAdjustLayer && (layerInput.value < 123 || layerInput.value > 127)) {
+            layerInput.value = 125;
+        }
         if (slider.value < 123 || slider.value > 127) slider.value = 125;
     } else if (mode === 'nether-floor') {
         layerHint.innerText = 'Floor: 0..4';
         seedHint.innerText = 'Seed-Independent';
         slider.min = 0;
         slider.max = 4;
+        if (autoAdjustLayer && (layerInput.value < 0 || layerInput.value > 4)) {
+            layerInput.value = 2;
+        }
         if (slider.value < 0 || slider.value > 4) slider.value = 2;
     } else { // Overworld
         if (version === '1.18+') {
@@ -242,25 +465,32 @@ function onConfigChange() {
             seedHint.innerText = 'Seed-Independent';
             slider.min = -64;
             slider.max = -60;
+            if (autoAdjustLayer && (layerInput.value < -64 || layerInput.value > -60)) {
+                layerInput.value = -62;
+            }
             if (slider.value < -64 || slider.value > -60) slider.value = -62;
         } else {
             layerHint.innerText = 'Floor: 0..4';
             seedHint.innerText = (version === '1.13-1.17') ? 'Seed Dependent' : 'Seed-Independent';
             slider.min = 0;
             slider.max = 4;
+            if (autoAdjustLayer && (layerInput.value < 0 || layerInput.value > 4)) {
+                layerInput.value = 2;
+            }
             if (slider.value < 0 || slider.value > 4) slider.value = 2;
         }
     }
 
     document.getElementById('chunkLayerValue').innerText = slider.value;
     renderChunkMap();
+    triggerAutoSave();
 }
 
 // ==============================================================================
-// 3. TAB SWITCHING & IMAGE UPLOAD
+// 4. TAB SWITCHING & IMAGE UPLOAD
 // ==============================================================================
 
-function switchTab(tab) {
+function switchTab(tab, triggerSave = true) {
     currentTab = tab;
     ['tabGrid', 'tabImage', 'tabText'].forEach(t => document.getElementById(t).classList.add('hidden'));
     ['tabGridBtn', 'tabImageBtn', 'tabTextBtn'].forEach(b => {
@@ -279,6 +509,8 @@ function switchTab(tab) {
         document.getElementById('tabText').classList.remove('hidden');
         document.getElementById('tabTextBtn').classList.add('text-white', 'bg-indigo-600', 'shadow-sm');
     }
+
+    if (triggerSave) triggerAutoSave();
 }
 
 function initDropZone() {
@@ -334,7 +566,7 @@ function clearImage() {
 }
 
 // ==============================================================================
-// 4. MULTI-THREADED SEARCH ENGINE CONTROLLER
+// 5. MULTI-THREADED SEARCH ENGINE CONTROLLER
 // ==============================================================================
 
 function toggleSearch() {
@@ -610,7 +842,7 @@ function finishSearch() {
 function copyTpCommand(x, y, z) {
     const cmd = `/tp @s ${x} ${y} ${z}`;
     navigator.clipboard.writeText(cmd).then(() => {
-        alert(`Copied to clipboard: ${cmd}`);
+        showToast(`Copied: ${cmd}`, 'fa-copy', 'text-indigo-400');
     });
 }
 
@@ -629,7 +861,7 @@ function exportResultsJSON() {
 }
 
 // ==============================================================================
-// 5. IMAGE PATTERN EXTRACTOR
+// 6. IMAGE PATTERN EXTRACTOR
 // ==============================================================================
 
 function extractPatternFromImage(img, gridRows, gridCols, mode, version, targetLayer) {
@@ -686,19 +918,21 @@ function extractPatternFromImage(img, gridRows, gridCols, mode, version, targetL
 }
 
 // ==============================================================================
-// 6. 16x16 CHUNK BEDROCK INSPECTOR
+// 7. 16x16 CHUNK BEDROCK INSPECTOR
 // ==============================================================================
 
 function inspectChunkCoords(cx, cz) {
     document.getElementById('inspectCx').value = cx;
     document.getElementById('inspectCz').value = cz;
     renderChunkMap();
+    triggerAutoSave();
     document.getElementById('chunkCanvas').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function onLayerSliderChange(val) {
     document.getElementById('chunkLayerValue').innerText = val;
     renderChunkMap();
+    triggerAutoSave();
 }
 
 function renderChunkMap() {

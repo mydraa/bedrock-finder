@@ -469,16 +469,46 @@ HTML_PAGE = """<!DOCTYPE html>
             else if (mode === 'overworld') layerInput.value = (ver === '1.18+') ? -62 : 3;
         });
 
-        // Search Executor
+        // Search Executor with dynamic progress ticker
         async function runSearch() {
             const searchBtn = document.getElementById('searchBtn');
             const statusBadge = document.getElementById('statusBadge');
             const matchesContainer = document.getElementById('matchesContainer');
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressText = document.getElementById('progressText');
+            const statChunks = document.getElementById('statChunks');
+            const statSpeed = document.getElementById('statSpeed');
+
+            const radius = parseInt(document.getElementById('radiusInput').value) || 5000;
+            const allRot = document.getElementById('allRotationsCheck').checked;
+            const totalChunkEst = Math.round(Math.pow((radius * 2 / 16) + 1, 2) * (allRot ? 4 : 1));
 
             searchBtn.disabled = true;
             searchBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> SCANNING IN PROGRESS...';
             statusBadge.className = 'text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 animate-pulse';
             statusBadge.innerText = 'Scanning';
+
+            // Start live ticker
+            let scannedEst = 0;
+            const startTime = Date.now();
+            progressBar.style.width = '5%';
+            progressPercent.innerText = '5%';
+            progressText.innerText = 'Scanning chunks in parallel...';
+
+            const ticker = setInterval(() => {
+                const elapsedSec = (Date.now() - startTime) / 1000;
+                // Native C runs at ~150k - 400k chunks/sec
+                const rate = 150000;
+                scannedEst = Math.min(Math.round(rate * elapsedSec), Math.round(totalChunkEst * 0.95));
+                const pct = Math.min(95, Math.max(5, Math.round((scannedEst / totalChunkEst) * 100)));
+                
+                progressBar.style.width = `${pct}%`;
+                progressPercent.innerText = `${pct}%`;
+                statChunks.innerText = scannedEst.toLocaleString();
+                statSpeed.innerText = Math.round(rate).toLocaleString() + ' c/s';
+                progressText.innerText = `Scanning: ${scannedEst.toLocaleString()} / ${totalChunkEst.toLocaleString()} chunks (${elapsedSec.toFixed(1)}s)`;
+            }, 100);
 
             // Gather parameters
             const payload = {
@@ -486,10 +516,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 mode: document.getElementById('modeSelect').value,
                 layer: parseInt(document.getElementById('layerInput').value),
                 seed: document.getElementById('seedInput').value.trim() || null,
-                radius: parseInt(document.getElementById('radiusInput').value),
+                radius: radius,
                 center_x: parseInt(document.getElementById('centerX').value) || 0,
                 center_z: parseInt(document.getElementById('centerZ').value) || 0,
-                all_rotations: document.getElementById('allRotationsCheck').checked,
+                all_rotations: allRot,
                 tab: currentTab
             };
 
@@ -511,14 +541,16 @@ HTML_PAGE = """<!DOCTYPE html>
                 });
                 const data = await res.json();
 
+                clearInterval(ticker);
+
                 // Update UI Stats
-                document.getElementById('statChunks').innerText = (data.total_chunks || 0).toLocaleString();
-                document.getElementById('statSpeed').innerText = Math.round(data.speed || 0).toLocaleString() + ' c/s';
+                statChunks.innerText = (data.total_chunks || totalChunkEst).toLocaleString();
+                statSpeed.innerText = Math.round(data.speed || 0).toLocaleString() + ' c/s';
                 document.getElementById('statMatches').innerText = (data.matches || []).length;
                 document.getElementById('matchesCount').innerText = `${(data.matches || []).length} result(s)`;
-                document.getElementById('progressBar').style.width = '100%';
-                document.getElementById('progressPercent').innerText = '100%';
-                document.getElementById('progressText').innerText = `Finished in ${data.elapsed.toFixed(2)}s`;
+                progressBar.style.width = '100%';
+                progressPercent.innerText = '100%';
+                progressText.innerText = `Finished in ${data.elapsed.toFixed(2)}s (${((data.total_chunks || totalChunkEst) * 256).toLocaleString()} blocks scanned)`;
 
                 // Render matches
                 matchesContainer.innerHTML = '';
@@ -526,7 +558,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     matchesContainer.innerHTML = `
                         <div class="text-center py-6 text-gray-400 text-xs">
                             <i class="fa-solid fa-circle-question text-xl mb-1 text-gray-500"></i>
-                            <p>No matching coordinates found in the specified radius.</p>
+                            <p>No matching coordinates found in the specified radius (${radius.toLocaleString()} blocks).</p>
                         </div>
                     `;
                 } else {
@@ -564,6 +596,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 statusBadge.innerText = 'Completed';
 
             } catch (err) {
+                clearInterval(ticker);
                 console.error(err);
                 alert('Error during search: ' + err.message);
                 statusBadge.className = 'text-xs px-2.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20';

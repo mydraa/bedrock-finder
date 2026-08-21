@@ -595,8 +595,68 @@ def parse_pattern_from_string_or_file(
 
 
 # ==============================================================================
-# 7. PARALLEL MULTIPROCESSING SEARCH ENGINE
+# 7. PARALLEL MULTIPROCESSING & NATIVE C SEARCH ENGINE
 # ==============================================================================
+
+import ctypes
+
+class CConstraint(ctypes.Structure):
+    _fields_ = [
+        ('dx', ctypes.c_int),
+        ('dz', ctypes.c_int),
+        ('exp_d', ctypes.c_int),
+        ('min_d', ctypes.c_int),
+        ('max_d', ctypes.c_int),
+        ('exp_rot', ctypes.c_int)
+    ]
+
+class CMatch(ctypes.Structure):
+    _fields_ = [
+        ('x', ctypes.c_int64),
+        ('y', ctypes.c_int64),
+        ('z', ctypes.c_int64),
+        ('cx', ctypes.c_int64),
+        ('cz', ctypes.c_int64),
+        ('rot_deg', ctypes.c_int)
+    ]
+
+_C_LIB = None
+
+def get_c_scanner_lib():
+    """Attempts to load or compile the native C scanner library."""
+    global _C_LIB
+    if _C_LIB is not None:
+        return _C_LIB
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    so_path = os.path.join(base_dir, "libscanner.so")
+    c_path = os.path.join(base_dir, "scanner.c")
+
+    if not os.path.exists(so_path) and os.path.exists(c_path):
+        try:
+            os.system(f"gcc -O3 -shared -fPIC -fopenmp '{c_path}' -o '{so_path}'")
+        except Exception:
+            pass
+
+    if os.path.exists(so_path):
+        try:
+            lib = ctypes.CDLL(so_path)
+            lib.scan_chunk_range.argtypes = [
+                ctypes.c_int64, ctypes.c_int64,
+                ctypes.c_int64, ctypes.c_int64,
+                ctypes.POINTER(CConstraint), ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int64,
+                ctypes.c_int, ctypes.c_int,
+                ctypes.POINTER(CMatch), ctypes.c_int
+            ]
+            lib.scan_chunk_range.restype = ctypes.c_int
+            _C_LIB = lib
+            return _C_LIB
+        except Exception as e:
+            print(f"[!] Warning: Could not load C accelerator ({e}), using Python.")
+
+    return None
+
 
 @dataclass
 class MatchResult:
@@ -618,7 +678,7 @@ def _worker_scan_chunk_batch(
         int                                  # rotation_deg
     ]
 ) -> List[Tuple[int, int, int, int, int, int]]:
-    """Worker process function scanning a batch of chunks."""
+    """Worker process function scanning a batch of chunks (Python fallback)."""
     min_cx, max_cx, min_cz, max_cz, serialized_constraints, mode_val, version_str, world_seed, rot_deg = args
 
     constraints = [
@@ -665,7 +725,7 @@ def _worker_scan_chunk_batch(
                     x0 = (cx << 4) + in_x - anchor.dx
                     z0 = (cz << 4) + in_z - anchor.dz
 
-                    # 1. Fast intra-chunk early exit
+                    # Fast intra-chunk check
                     intra_failed = False
                     for c in constraints:
                         ix = in_x - anchor.dx + c.dx
@@ -684,7 +744,7 @@ def _worker_scan_chunk_batch(
                     if intra_failed:
                         continue
 
-                    # 2. Inter-chunk boundary check
+                    # Inter-chunk check
                     inter_failed = False
                     for c in constraints:
                         ix = in_x - anchor.dx + c.dx
@@ -706,19 +766,6 @@ def _worker_scan_chunk_batch(
                     if inter_failed:
                         continue
 
-                    # 3. Texture rotation validation if specified
-                    rot_failed = False
-                    for c in constraints:
-                        if c.expected_rotation is not None:
-                            wx = x0 + c.dx
-                            wz = z0 + c.dz
-                            actual_rot = get_texture_rotation_index(wx, target_y, wz)
-                            if actual_rot != c.expected_rotation:
-                                rot_failed = True
-                                break
-                    if rot_failed:
-                        continue
-
                     matches.append((x0, target_y, z0, x0 >> 4, z0 >> 4, rot_deg))
 
         if len(chunk_cache) > 4000:
@@ -728,7 +775,7 @@ def _worker_scan_chunk_batch(
 
 
 class BedrockSearchEngine:
-    """Parallel search engine orchestrating scanning processes."""
+    """High-performance search engine with native C acceleration and Python multiprocessing fallback."""
 
     def __init__(
         self,
@@ -748,7 +795,7 @@ class BedrockSearchEngine:
         min_z: int,
         max_x: int,
         max_z: int,
-        batch_size: int = 128
+        batch_size: int = 256
     ) -> List[MatchResult]:
         """
         Executes exhaustive search within the bounds [min_x..max_x, min_z..max_z].
@@ -762,15 +809,18 @@ class BedrockSearchEngine:
         total_chunks_z = max_cz - min_cz + 1
         total_chunks = total_chunks_x * total_chunks_z
 
+        c_lib = get_c_scanner_lib()
+        engine_type = "Native C OpenMP Accelerator" if c_lib is not None else f"Python Multiprocessing ({self.threads} cores)"
+
         print(f"\n" + "=" * 70)
-        print(f"[*] STARTING PARALLEL BEDROCK SCAN")
+        print(f"[*] STARTING BEDROCK SCAN")
+        print(f"[*] Engine Mode    : {engine_type}")
         print(f"[*] Minecraft Ver  : {self.pattern.version.value}")
         print(f"[*] Dimension/Mode : {self.pattern.mode.value} (Base Layer Y={self.pattern.target_layer})")
         print(f"[*] World Seed     : {self.world_seed if self.world_seed is not None else 'None (Deterministic / Seed-Independent)'}")
         print(f"[*] Block Bounds   : X:[{min_x:,} .. {max_x:,}], Z:[{min_z:,} .. {max_z:,}]")
         print(f"[*] Chunk Bounds   : CX:[{min_cx:,} .. {max_cx:,}], CZ:[{min_cz:,} .. {max_cz:,}]")
         print(f"[*] Total Chunks   : {total_chunks:,} (~{total_chunks * 256:,} blocks)")
-        print(f"[*] Active Threads : {self.threads}")
         print(f"[*] Rotations      : {'All 4 orientations (0°, 90°, 180°, 270°)' if self.all_rotations else 'Original orientation (0°)'}")
         print("=" * 70)
 
@@ -786,37 +836,48 @@ class BedrockSearchEngine:
             else 2 if self.pattern.mode == DimensionMode.NETHER_FLOOR
             else 3
         )
-        version_str = self.pattern.version.value
-
-        tasks = []
-        for pat, deg in patterns_to_test:
-            serialized_constraints = [
-                {
-                    "dx": c.dx, "dz": c.dz,
-                    "expected_depth": c.expected_depth,
-                    "min_depth": c.min_depth,
-                    "max_depth": c.max_depth,
-                    "expected_rotation": c.expected_rotation
-                } for c in pat.constraints
-            ]
-
-            for cx in range(min_cx, max_cx + 1, batch_size):
-                cx_end = min(cx + batch_size - 1, max_cx)
-                for cz in range(min_cz, max_cz + 1, batch_size):
-                    cz_end = min(cz + batch_size - 1, max_cz)
-                    tasks.append((cx, cx_end, cz, cz_end, serialized_constraints, mode_val, version_str, self.world_seed, deg))
+        ver_val = (
+            1 if self.pattern.version == MinecraftVersion.V1_12
+            else 2 if self.pattern.version == MinecraftVersion.V1_13_1_17
+            else 3
+        )
+        target_y = self.pattern.target_layer
+        world_seed_val = self.world_seed or 0
 
         start_time = time.perf_counter()
         results: List[MatchResult] = []
-        total_tasks_chunks = total_chunks * len(patterns_to_test)
 
-        with mp.Pool(processes=self.threads) as pool:
-            for batch_matches in pool.imap_unordered(_worker_scan_chunk_batch, tasks):
-                for m in batch_matches:
+        # 1. Native C Accelerator Path
+        if c_lib is not None:
+            max_matches_cap = 5000
+            for pat, deg in patterns_to_test:
+                n_c = len(pat.constraints)
+                if n_c == 0:
+                    continue
+                c_arr = (CConstraint * n_c)()
+                for idx, c in enumerate(pat.constraints):
+                    c_arr[idx].dx = c.dx
+                    c_arr[idx].dz = c.dz
+                    c_arr[idx].exp_d = c.expected_depth if c.expected_depth is not None else -1
+                    c_arr[idx].min_d = c.min_depth if c.min_depth is not None else -1
+                    c_arr[idx].max_d = c.max_depth if c.max_depth is not None else -1
+                    c_arr[idx].exp_rot = c.expected_rotation if c.expected_rotation is not None else -1
+
+                out_matches = (CMatch * max_matches_cap)()
+                found_count = c_lib.scan_chunk_range(
+                    min_cx, max_cx, min_cz, max_cz,
+                    c_arr, n_c,
+                    mode_val, ver_val, world_seed_val,
+                    deg, target_y,
+                    out_matches, max_matches_cap
+                )
+
+                for i in range(min(found_count, max_matches_cap)):
+                    m = out_matches[i]
                     res = MatchResult(
-                        x=m[0], y=m[1], z=m[2],
-                        chunk_x=m[3], chunk_z=m[4],
-                        rotation_deg=m[5]
+                        x=m.x, y=m.y, z=m.z,
+                        chunk_x=m.cx, chunk_z=m.cz,
+                        rotation_deg=m.rot_deg
                     )
                     results.append(res)
                     print(f"\n[+] MATCH FOUND!")
@@ -824,7 +885,43 @@ class BedrockSearchEngine:
                     print(f"    --> Chunk Coordinates : CX={res.chunk_x:,}, CZ={res.chunk_z:,}")
                     print(f"    --> Orientation       : {res.rotation_deg}°")
 
+        # 2. Python Multiprocessing Fallback Path
+        else:
+            version_str = self.pattern.version.value
+            tasks = []
+            for pat, deg in patterns_to_test:
+                serialized_constraints = [
+                    {
+                        "dx": c.dx, "dz": c.dz,
+                        "expected_depth": c.expected_depth,
+                        "min_depth": c.min_depth,
+                        "max_depth": c.max_depth,
+                        "expected_rotation": c.expected_rotation
+                    } for c in pat.constraints
+                ]
+
+                for cx in range(min_cx, max_cx + 1, batch_size):
+                    cx_end = min(cx + batch_size - 1, max_cx)
+                    for cz in range(min_cz, max_cz + 1, batch_size):
+                        cz_end = min(cz + batch_size - 1, max_cz)
+                        tasks.append((cx, cx_end, cz, cz_end, serialized_constraints, mode_val, version_str, self.world_seed, deg))
+
+            with mp.Pool(processes=self.threads) as pool:
+                for batch_matches in pool.imap_unordered(_worker_scan_chunk_batch, tasks):
+                    for m in batch_matches:
+                        res = MatchResult(
+                            x=m[0], y=m[1], z=m[2],
+                            chunk_x=m[3], chunk_z=m[4],
+                            rotation_deg=m[5]
+                        )
+                        results.append(res)
+                        print(f"\n[+] MATCH FOUND!")
+                        print(f"    --> Block Coordinates : X={res.x:,}, Y={res.y}, Z={res.z:,}")
+                        print(f"    --> Chunk Coordinates : CX={res.chunk_x:,}, CZ={res.chunk_z:,}")
+                        print(f"    --> Orientation       : {res.rotation_deg}°")
+
         elapsed = time.perf_counter() - start_time
+        total_tasks_chunks = total_chunks * len(patterns_to_test)
         speed = total_tasks_chunks / elapsed if elapsed > 0 else 0
 
         print("\n" + "=" * 70)

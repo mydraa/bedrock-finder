@@ -192,11 +192,14 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="flex items-center justify-between text-xs text-gray-400">
                         <div class="flex items-center space-x-2">
                             <span>Grid Size:</span>
-                            <select id="gridSizeSelect" onchange="resizeGrid()" class="bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-white">
+                            <select id="gridSizeSelect" onchange="resizeGrid()" class="bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-white font-medium">
                                 <option value="4">4 x 4</option>
-                                <option value="5" selected>5 x 5</option>
+                                <option value="5">5 x 5</option>
                                 <option value="6">6 x 6</option>
                                 <option value="8">8 x 8</option>
+                                <option value="10" selected>10 x 10 (CTF Standard)</option>
+                                <option value="12">12 x 12</option>
+                                <option value="16">16 x 16 (Full Chunk)</option>
                             </select>
                         </div>
                         <div class="flex items-center space-x-3 text-[11px]">
@@ -335,7 +338,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <script>
         let currentTab = 'grid';
         let gridState = [];
-        let gridSize = 5;
+        let gridSize = 10;
         let uploadedImageBase64 = null;
 
         // Initialize grid on load
@@ -346,23 +349,26 @@ HTML_PAGE = """<!DOCTYPE html>
             container.innerHTML = '';
             container.style.gridTemplateColumns = `repeat(${gridSize}, minmax(0, 1fr))`;
 
-            // Default preset sample: 1 0 1 0 0 ...
-            const defaultSample = [
-                [1, 0, 1, 0, 0],
-                [1, 0, 1, 0, 0],
-                [1, 1, 1, 0, 0],
-                [1, 1, 1, 1, 1],
-                [0, 1, 0, 0, 0]
-            ];
+            // Responsive cell size class
+            let cellSizeClass = 'w-9 h-9 text-xs';
+            if (gridSize >= 16) {
+                cellSizeClass = 'w-4 h-4 text-[8px]';
+            } else if (gridSize >= 12) {
+                cellSizeClass = 'w-5 h-5 text-[9px]';
+            } else if (gridSize >= 10) {
+                cellSizeClass = 'w-6 h-6 text-[10px]';
+            } else if (gridSize >= 8) {
+                cellSizeClass = 'w-7 h-7 text-xs';
+            }
 
             for (let r = 0; r < gridSize; r++) {
                 gridState[r] = [];
                 for (let c = 0; c < gridSize; c++) {
-                    const defaultVal = (r < 5 && c < 5 && gridSize >= 5) ? defaultSample[r][c] : 1;
+                    const defaultVal = 1; // Default Solid Bedrock
                     gridState[r][c] = defaultVal;
 
                     const cell = document.createElement('div');
-                    cell.className = 'w-9 h-9 rounded flex items-center justify-center text-xs font-bold border cursor-pointer cell';
+                    cell.className = `${cellSizeClass} rounded flex items-center justify-center font-bold border cursor-pointer cell`;
                     cell.dataset.row = r;
                     cell.dataset.col = c;
                     cell.onclick = () => cycleCellState(r, c);

@@ -1,24 +1,49 @@
 # Minecraft Bedrock Pattern Finder & Reverse-Engineering Engine
 
-A high-performance, standalone Python tool & Web Interface to locate exact $(X, Y, Z)$ coordinates of bedrock formations in Minecraft Java Edition across multiple versions (1.0 to 1.21+) from world seeds, pattern matrices, or screenshots.
+A high-performance tool & modern Web Interface to locate exact $(X, Y, Z)$ coordinates of bedrock formations in Minecraft Java Edition across multiple versions (1.0 to 1.21+) from world seeds, pattern matrices, or screenshots.
 
 ---
 
-## Interactive Web GUI
+## 🚀 Instant Deployment on Vercel
 
-Launch the built-in modern interactive Web User Interface (zero external dependencies):
+This repository is **100% compatible with Vercel** (static zero-configuration hosting with in-browser multi-threaded Web Workers).
 
+### Option 1: Deploy with Vercel CLI
 ```bash
-python3 bedrock.py --gui
-# or
-python3 web_gui.py
+# Install Vercel CLI (if not already installed)
+npm install -g vercel
+
+# Deploy instantly
+vercel
+# or for production
+vercel --prod
 ```
 
-This opens an interactive interface in your browser (`http://localhost:5000`) featuring:
-- **Interactive Visual Grid Editor:** Click cells to toggle Solid Bedrock (`#`), Hole (`.`), or Wildcard/Unknown (`?`).
-- **Image / Screenshot Drag & Drop:** Upload screenshots with auto-detection of holes and block texture rotations.
-- **Live Search Status & Metrics:** Real-time throughput (chunks/sec), scanned chunk counter, progress bar.
-- **Coordinates & Chunk Map Inspector:** View found coordinates and explore 16x16 chunk bedrock layers.
+### Option 2: Deploy with Git & Vercel Dashboard
+1. Push this repository to GitHub / GitLab / Bitbucket.
+2. Go to [Vercel Dashboard](https://vercel.com/new).
+3. Import your repository and click **Deploy** (no build settings required).
+
+### Option 3: Run Locally
+```bash
+# Method A: Python local server
+python3 -m http.server 3000
+
+# Method B: Python GUI launcher
+python3 bedrock.py --gui
+```
+Then open `http://localhost:3000` in your browser.
+
+---
+
+## 🌐 Web Features
+
+- **Multi-Threaded In-Browser Engine:** Uses `Web Workers` and `BigInt` 48-bit LCG arithmetic to scan millions of blocks per second directly on the client's CPU without server limits or timeouts.
+- **Interactive Visual Grid Editor:** Click cells to toggle Solid Bedrock (`#`), Hole (`.`), or Wildcard (`?`), with drag-to-draw support.
+- **Screenshot / Image Uploader:** Drag & drop bedrock screenshots with automatic grayscale thresholding and texture rotation detection.
+- **16×16 Chunk Bedrock Inspector:** Interactive canvas viewer showing exact bedrock depths and solid/air states at any Y level.
+- **Instant Teleport Command:** One-click `/tp @s X Y Z` generator and JSON export.
+- **Preset Library:** Pre-configured test patterns (Nether 5x5, 4x4 Holes, Overworld stairs, Cross formations).
 
 ---
 
@@ -29,34 +54,6 @@ This opens an interactive interface in your browser (`http://localhost:5000`) fe
 | `--version 1.12` *(default)* | 1.0 - 1.12.2 (Legacy) | ❌ Seed-independent | ❌ Seed-independent | ❌ Seed-independent ($Y=0..4$) |
 | `--version 1.13-1.17` | 1.13 - 1.17.1 | ❌ Seed-independent | ❌ Seed-independent |  World seed dependent ($Y=0..4$) |
 | `--version 1.18+` | 1.18 - 1.21+ (Caves & Cliffs) | ❌ Seed-independent | ❌ Seed-independent |  Negative depths ($Y=-64..-60$) |
-
----
-
-## Features
-
-- **Interactive Web Interface:** Modern web UI with clickable grid editor and image drag & drop.
-- **Multi-Version Architecture:** Seamlessly adapt bedrock layers, depths, and coordinate spaces between legacy (1.12-), intermediate (1.13-1.17), and modern (1.18+) Minecraft versions.
-- **Bit-Exact Java LCG PRNG Emulation:** Replicates `java.util.Random` 48-bit Linear Congruential Generator.
-- **LCG Jump Tables:** $O(1)$ computation of LCG states for arbitrary block offsets within chunks.
-- **High-Throughput Vectorization:** NumPy-accelerated scanning capable of processing millions of chunks per second.
-- **Parallel Multiprocessing Engine:** Multi-core search with cascaded early-exit filters (80% rejection on 1st anchor, 96% on 2nd, 99.2% on 3rd).
-- **Coordinate Random & Texture Rotation:** Emulates `MathHelper.getCoordinateRandom(x, y, z)` to extract and match block texture rotations (0°, 90°, 180°, 270°).
-- **Flexible Input Formats:**
-  - Interactive clickable grid.
-  - Text grids: numeric depths (`0..4`, `123..127`, `-64..-60`) or binary presence (`#` for bedrock, `.` for hole/air, `?` for wildcard).
-  - JSON format (`[[...], [...]]`).
-  - Image / Screenshot analysis via PIL & NumPy.
-- **Orientation Invariance (`--all-rotations`):** Automatically tests all 4 cardinal orientations (0°, 90°, 180°, 270°).
-
----
-
-## Installation
-
-```bash
-git clone https://github.com/mydraa/bedrock-finder.git
-cd bedrock-finder
-pip install -r requirements.txt
-```
 
 ---
 
@@ -88,53 +85,15 @@ python3 bedrock.py --version 1.18+ --mode overworld --layer -62 --matrix "# . . 
 python3 bedrock.py --matrix pattern.txt --version 1.12 --mode overworld --radius 10000 --all-rotations
 ```
 
-### 5. Search from a Screenshot / Cropped Image
+### 5. Inspect / Export a Chunk Bedrock Map
 ```bash
-python3 bedrock.py --image screenshot.png --version 1.12 --grid-size 8 8 --mode nether-roof --layer 127 --radius 20000
-```
-
-### 6. Search with Texture Rotation Detection
-```bash
-python3 bedrock.py --image crop.png --detect-textures --radius 10000
-```
-
-### 7. Inspect / Export a Chunk Bedrock Map
-```bash
-# Export 1.18+ Overworld chunk at Y=-62
-python3 bedrock.py --export-chunk 85 30 --version 1.18+ --mode overworld --layer -62
-
-# Export 1.12 Nether roof chunk at Y=125
 python3 bedrock.py --export-chunk 85 30 --version 1.12 --mode nether-roof --layer 125
 ```
 
-### 8. Performance Benchmark
+### 6. Run Scanner Benchmark
 ```bash
 python3 bedrock.py --benchmark
 ```
-
----
-
-## CLI Options
-
-| Option | Description |
-|---|---|
-| `--gui` | Launch the interactive Modern Web User Interface |
-| `--version`, `-v` | Minecraft version: `1.12` (default), `1.13-1.17`, `1.18+`, `1.16.5`, `1.20`, etc. |
-| `--matrix`, `-p` | Pattern as inline string or file path (`.txt` / `.json`) |
-| `--image`, `-i` | Path to screenshot or cropped bedrock image |
-| `--seed`, `-s` | World Seed (optional in seed-independent modes like 1.12-) |
-| `--mode`, `-m` | Target dimension: `nether-roof` (default), `nether-floor`, `overworld` |
-| `--layer`, `-y` | Target Y layer (e.g. 127, 126, 4, 3, -64, -63...) |
-| `--radius`, `-r` | Search radius in blocks around center (default: 10000) |
-| `--radius-chunks` | Search radius in chunks |
-| `--center`, `-c` | Search center `X Z` (default: 0 0) |
-| `--bounds` | Custom bounding box `MIN_X MIN_Z MAX_X MAX_Z` |
-| `--threads`, `-t` | Worker process count (default: CPU core count) |
-| `--all-rotations`, `-R` | Test all 4 cardinal orientations (0°, 90°, 180°, 270°) |
-| `--detect-textures` | Enable texture rotation analysis on image input |
-| `--grid-size` | Image grid size `ROWS COLS` |
-| `--export-chunk` | Print ASCII map of a chunk `CHUNK_X CHUNK_Z` |
-| `--benchmark` | Run scanner performance benchmark |
 
 ---
 

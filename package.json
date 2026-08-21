@@ -1,0 +1,21 @@
+{
+  "name": "minecraft-bedrock-finder",
+  "version": "2.1.1",
+  "description": "Minecraft Bedrock Pattern Finder & Coordinate Locator (Java Edition 1.0 -> 1.21+)",
+  "main": "index.html",
+  "scripts": {
+    "start": "python3 -m http.server 3000",
+    "dev": "python3 -m http.server 3000",
+    "test": "node engine.js"
+  },
+  "keywords": [
+    "minecraft",
+    "bedrock",
+    "reverse-engineering",
+    "prng",
+    "lcg",
+    "ctf"
+  ],
+  "author": "Antigravity",
+  "license": "MIT"
+}

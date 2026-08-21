@@ -1,0 +1,100 @@
+/* Custom styles and animations for Minecraft Bedrock Finder */
+
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+    --bg-main: #0b0f19;
+    --bg-card: #131b2e;
+    --bg-input: #0a0e1a;
+    --border-color: #232f48;
+    --accent-primary: #6366f1;
+    --accent-glow: rgba(99, 102, 241, 0.35);
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--bg-main);
+    color: #e2e8f0;
+}
+
+.code-font {
+    font-family: 'Fira Code', monospace;
+}
+
+/* Glassmorphic card styling */
+.glass-card {
+    background: rgba(19, 27, 46, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-color);
+}
+
+/* Grid editor cells */
+.grid-cell {
+    aspect-ratio: 1 / 1;
+    transition: all 0.12s cubic-bezier(0.4, 0, 0.2, 1);
+    user-select: none;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 700;
+}
+
+.grid-cell:hover {
+    transform: scale(1.05);
+    z-index: 10;
+}
+
+.cell-solid {
+    background: #374151;
+    border: 1px solid #4b5563;
+    color: #f3f4f6;
+    box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.1);
+}
+
+.cell-hole {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    color: #64748b;
+}
+
+.cell-wildcard {
+    background: #1e1b4b;
+    border: 1px dashed #6366f1;
+    color: #818cf8;
+    opacity: 0.75;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: #0b0f19;
+}
+::-webkit-scrollbar-thumb {
+    background: #232f48;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #384869;
+}
+
+/* Glowing buttons */
+.btn-glow {
+    position: relative;
+    box-shadow: 0 0 20px var(--accent-glow);
+    transition: all 0.2s ease-in-out;
+}
+.btn-glow:hover {
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.6);
+    transform: translateY(-1px);
+}
+
+/* Chunk Canvas */
+.chunk-canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+}

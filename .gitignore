@@ -4,6 +4,7 @@ __pycache__/
 .kilo/
 compiled/
 *.png
+*.so
 .DS_Store
 .vscode/
 .idea/

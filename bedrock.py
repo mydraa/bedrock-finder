@@ -5,7 +5,7 @@
 MINECRAFT BEDROCK PATTERN FINDER & REVERSE-ENGINEERING ENGINE
 ================================================================================
 Author   : Antigravity (Google DeepMind)
-Version  : 2.1.0 (Multi-version Support: 1.0 -> 1.21+)
+Version  : 2.1.1 (Multi-version Support: 1.0 -> 1.21+)
 
 Description:
 ------------
@@ -41,6 +41,7 @@ from typing import List, Tuple, Optional, Dict, Any, Union
 import multiprocessing as mp
 from dataclasses import dataclass
 from enum import Enum
+import ctypes
 
 import numpy as np
 from PIL import Image
@@ -88,7 +89,8 @@ class JavaRandom:
 
         bits = self.next(31)
         val = bits % bound
-        while (bits - val + (bound - 1)) < 0:
+        # In Java: (int)(bits - val + (bound - 1)) < 0 checks for 32-bit signed overflow
+        while (bits - val + (bound - 1)) >= (1 << 31):
             bits = self.next(31)
             val = bits % bound
         return val
@@ -117,12 +119,23 @@ AK_TABLE, BK_TABLE = compute_lcg_jump_tables(512)
 # 2. COORDINATE HASHING & TEXTURE ROTATION (getCoordinateRandom)
 # ==============================================================================
 
+def to_int32(val: int) -> int:
+    """Simulates 32-bit signed integer casting and overflow in Java."""
+    val = val & 0xFFFFFFFF
+    return val if val < 0x80000000 else val - 0x100000000
+
+
 def get_coordinate_random(x: int, y: int, z: int) -> int:
     """
     Exact equivalent of net.minecraft.util.math.MathHelper.getCoordinateRandom(x, y, z).
     Used by Minecraft (1.8 to 1.21+) to select block model variants and texture rotations.
+    In Java:
+      long l = (long)(x * 3129871) ^ (long)z * 116129781L ^ (long)y;
+      l = l * l * 42317861L + l * 11L;
+      return (l >> 16);
     """
-    l = ((x * COORD_RAND_X_MULT) ^ (z * COORD_RAND_Z_MULT) ^ y) & UINT64_MASK
+    x_part = to_int32(x * COORD_RAND_X_MULT)
+    l = (x_part ^ (z * COORD_RAND_Z_MULT) ^ y) & UINT64_MASK
     l = (l * l * COORD_RAND_SQ_MULT + l * COORD_RAND_LIN_MULT) & UINT64_MASK
     return (l >> 16) & UINT64_MASK
 
@@ -213,22 +226,34 @@ def get_chunk_bedrock_grid(
             s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
             bits = s >> 17
             val = bits % 5
-            while bits - val + 4 < 0:
+            while (bits - val + 4) >= (1 << 31):
                 s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
                 bits = s >> 17
                 val = bits % 5
             grid[i] = val
             # skip floor random
             s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
+            bits = s >> 17
+            val = bits % 5
+            while (bits - val + 4) >= (1 << 31):
+                s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
+                bits = s >> 17
+                val = bits % 5
     elif mode == DimensionMode.NETHER_FLOOR:
         for i in range(256):
             # skip roof random
             s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
+            bits = s >> 17
+            val = bits % 5
+            while (bits - val + 4) >= (1 << 31):
+                s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
+                bits = s >> 17
+                val = bits % 5
             # floor random
             s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
             bits = s >> 17
             val = bits % 5
-            while bits - val + 4 < 0:
+            while (bits - val + 4) >= (1 << 31):
                 s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
                 bits = s >> 17
                 val = bits % 5
@@ -238,7 +263,7 @@ def get_chunk_bedrock_grid(
             s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
             bits = s >> 17
             val = bits % 5
-            while bits - val + 4 < 0:
+            while (bits - val + 4) >= (1 << 31):
                 s = (s * LCG_MULTIPLIER + LCG_ADDEND) & LCG_MASK
                 bits = s >> 17
                 val = bits % 5
@@ -294,7 +319,7 @@ class BedrockPattern:
         for r in range(self.height):
             for c in range(self.width):
                 val = mat[r, c]
-                if val is None or val == -1 or val == "?" or str(val).strip() == "?":
+                if val is None or val == -1 or val == "?" or str(val).strip() in ("?", "x", "*", "None"):
                     continue
                 d = int(val)
                 if self.mode == DimensionMode.NETHER_ROOF and d >= 120:
@@ -309,7 +334,7 @@ class BedrockPattern:
         for r in range(self.height):
             for c in range(self.width):
                 val = mat[r, c]
-                if val is None or val == "?" or str(val).strip() == "?":
+                if val is None or val == "?" or str(val).strip() in ("?", "x", "*", "None"):
                     continue
 
                 is_bedrock = (val in (1, True, "#", "B", "1", "b"))
@@ -333,11 +358,13 @@ class BedrockPattern:
     def _apply_rotations(self, rot_matrix: Union[List[List[Any]], np.ndarray]) -> None:
         mat = np.array(rot_matrix)
         h, w = mat.shape
+        if self.height == 0:
+            self.height, self.width = h, w
         constraint_map = {(c.dx, c.dz): c for c in self.constraints}
         for r in range(h):
             for c in range(w):
                 val = mat[r, c]
-                if val is not None and val != -1 and val != "?":
+                if val is not None and val != -1 and val != "?" and str(val).strip() not in ("?", "x", "*", "None"):
                     rot_idx = int(val)
                     if (r, c) in constraint_map:
                         constraint_map[(r, c)].expected_rotation = rot_idx
@@ -351,6 +378,11 @@ class BedrockPattern:
         k = k % 4
         if k == 0:
             return self
+
+        # Fallback if height/width not populated
+        if self.height == 0 and self.constraints:
+            self.height = max(c.dx for c in self.constraints) + 1
+            self.width = max(c.dz for c in self.constraints) + 1
 
         new_h, new_w = self.height, self.width
         new_pattern = BedrockPattern(mode=self.mode, version=self.version, target_layer=self.target_layer)
@@ -531,10 +563,14 @@ def parse_pattern_from_string_or_file(
 ) -> BedrockPattern:
     """
     Parses a pattern from an inline string or file path (JSON / plain text).
+    Supports numeric depths (0..4, 123..127, -64..-60) and binary characters (# . B b).
     """
     if os.path.exists(content):
         with open(content, "r", encoding="utf-8") as f:
             content = f.read()
+    else:
+        # Unescape literal backslash-n / backslash-r passed via CLI arguments
+        content = content.replace(r"\r\n", "\n").replace(r"\n", "\n")
 
     content = content.strip()
 
@@ -560,45 +596,54 @@ def parse_pattern_from_string_or_file(
         except Exception:
             pass
 
-    lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("//")]
-    if not lines:
+    raw_lines = [line.strip() for line in content.splitlines() if line.strip() and not line.strip().startswith("//")]
+    if not raw_lines:
         raise ValueError("No valid pattern found in input.")
 
-    first_tokens = lines[0].split()
-    is_numeric = any(tok.lstrip("-").isdigit() for tok in first_tokens if tok) and len(first_tokens) > 1
+    # Check if lines contain binary symbols
+    has_binary_symbols = any(
+        any(ch in ("#", ".", "B", "b") for ch in line)
+        for line in raw_lines
+    )
 
-    if is_numeric:
+    token_grid = [line.split() if (" " in line or "\t" in line) else list(line) for line in raw_lines]
+
+    has_higher_numbers = any(
+        any(tok.lstrip("-").isdigit() and int(tok) not in (0, 1) for tok in row if tok.lstrip("-").isdigit())
+        for row in token_grid
+    )
+
+    if has_higher_numbers or (not has_binary_symbols and any(tok.lstrip("-").isdigit() for row in token_grid for tok in row)):
         grid: List[List[Any]] = []
-        for line in lines:
-            row = []
-            for tok in line.split():
-                if tok == "?" or tok == "x":
-                    row.append(None)
+        for row in token_grid:
+            grid_row = []
+            for tok in row:
+                if tok in ("?", "x", "*", "None", "null"):
+                    grid_row.append(None)
+                elif tok.lstrip("-").isdigit():
+                    grid_row.append(int(tok))
                 else:
-                    row.append(int(tok))
-            grid.append(row)
+                    grid_row.append(None)
+            grid.append(grid_row)
         return BedrockPattern(mode=mode, version=version, target_layer=target_layer, height_matrix=grid)
     else:
         grid = []
-        for line in lines:
-            row = []
-            tokens = line.split() if " " in line else list(line)
-            for ch in tokens:
+        for row in token_grid:
+            grid_row = []
+            for ch in row:
                 if ch in ("#", "B", "1", "b"):
-                    row.append(1)
+                    grid_row.append(1)
                 elif ch in (".", " ", "0", "-", "_"):
-                    row.append(0)
+                    grid_row.append(0)
                 else:
-                    row.append("?")
-            grid.append(row)
+                    grid_row.append("?")
+            grid.append(grid_row)
         return BedrockPattern(mode=mode, version=version, target_layer=target_layer, binary_matrix=grid)
 
 
 # ==============================================================================
 # 7. PARALLEL MULTIPROCESSING & NATIVE C SEARCH ENGINE
 # ==============================================================================
-
-import ctypes
 
 class CConstraint(ctypes.Structure):
     _fields_ = [
@@ -610,6 +655,7 @@ class CConstraint(ctypes.Structure):
         ('exp_rot', ctypes.c_int)
     ]
 
+
 class CMatch(ctypes.Structure):
     _fields_ = [
         ('x', ctypes.c_int64),
@@ -620,7 +666,9 @@ class CMatch(ctypes.Structure):
         ('rot_deg', ctypes.c_int)
     ]
 
+
 _C_LIB = None
+
 
 def get_c_scanner_lib():
     """Attempts to load or compile the native C scanner library."""
@@ -632,7 +680,14 @@ def get_c_scanner_lib():
     so_path = os.path.join(base_dir, "libscanner.so")
     c_path = os.path.join(base_dir, "scanner.c")
 
+    should_compile = False
     if not os.path.exists(so_path) and os.path.exists(c_path):
+        should_compile = True
+    elif os.path.exists(c_path) and os.path.exists(so_path):
+        if os.path.getmtime(c_path) > os.path.getmtime(so_path):
+            should_compile = True
+
+    if should_compile:
         try:
             os.system(f"gcc -O3 -shared -fPIC -fopenmp '{c_path}' -o '{so_path}'")
         except Exception:
@@ -675,11 +730,12 @@ def _worker_scan_chunk_batch(
         int,                                 # mode_val (1: NETHER_ROOF, 2: NETHER_FLOOR, 3: OVERWORLD)
         str,                                 # version_val ("1.12", "1.13-1.17", "1.18+")
         Optional[int],                       # world_seed
-        int                                  # rotation_deg
+        int,                                 # rotation_deg
+        int                                  # target_y
     ]
 ) -> List[Tuple[int, int, int, int, int, int]]:
     """Worker process function scanning a batch of chunks (Python fallback)."""
-    min_cx, max_cx, min_cz, max_cz, serialized_constraints, mode_val, version_str, world_seed, rot_deg = args
+    min_cx, max_cx, min_cz, max_cz, serialized_constraints, mode_val, version_str, world_seed, rot_deg, target_y = args
 
     constraints = [
         PatternConstraint(
@@ -711,10 +767,7 @@ def _worker_scan_chunk_batch(
             chunk_cache[k] = g
         return g
 
-    anchor = constraints[0]
     matches: List[Tuple[int, int, int, int, int, int]] = []
-
-    target_y = get_default_layer(mode, version)
 
     for cx in range(min_cx, max_cx + 1):
         for cz in range(min_cz, max_cz + 1):
@@ -722,51 +775,76 @@ def _worker_scan_chunk_batch(
 
             for in_x in range(16):
                 for in_z in range(16):
-                    x0 = (cx << 4) + in_x - anchor.dx
-                    z0 = (cz << 4) + in_z - anchor.dz
-
-                    # Fast intra-chunk check
-                    intra_failed = False
+                    # Fast intra-chunk check (up to 3 constraints)
+                    pass_fast = True
+                    checks = 0
                     for c in constraints:
-                        ix = in_x - anchor.dx + c.dx
-                        iz = in_z - anchor.dz + c.dz
+                        if checks >= 3:
+                            break
+                        ix = in_x + c.dx
+                        iz = in_z + c.dz
                         if 0 <= ix < 16 and 0 <= iz < 16:
-                            depth = grid[ix * 16 + iz]
-                            if c.expected_depth is not None and depth != c.expected_depth:
-                                intra_failed = True
-                                break
-                            if c.min_depth is not None and depth < c.min_depth:
-                                intra_failed = True
-                                break
-                            if c.max_depth is not None and depth > c.max_depth:
-                                intra_failed = True
-                                break
-                    if intra_failed:
+                            if c.expected_depth is not None or c.min_depth is not None or c.max_depth is not None:
+                                depth = grid[ix * 16 + iz]
+                                if c.expected_depth is not None and depth != c.expected_depth:
+                                    pass_fast = False
+                                    break
+                                if c.min_depth is not None and depth < c.min_depth:
+                                    pass_fast = False
+                                    break
+                                if c.max_depth is not None and depth > c.max_depth:
+                                    pass_fast = False
+                                    break
+                                checks += 1
+                            if c.expected_rotation is not None:
+                                wx = (cx << 4) + ix
+                                wz = (cz << 4) + iz
+                                rot = get_texture_rotation_index(wx, target_y, wz)
+                                if rot != c.expected_rotation:
+                                    pass_fast = False
+                                    break
+                                checks += 1
+                    if not pass_fast:
                         continue
 
-                    # Inter-chunk check
-                    inter_failed = False
+                    # Fully verify all constraints
+                    ok = True
+                    x0 = (cx << 4) + in_x
+                    z0 = (cz << 4) + in_z
+
                     for c in constraints:
-                        ix = in_x - anchor.dx + c.dx
-                        iz = in_z - anchor.dz + c.dz
-                        if not (0 <= ix < 16 and 0 <= iz < 16):
-                            wx = x0 + c.dx
-                            wz = z0 + c.dz
-                            neighbor_grid = get_chunk(wx >> 4, wz >> 4)
-                            depth = neighbor_grid[(wx & 15) * 16 + (wz & 15)]
+                        wx = x0 + c.dx
+                        wz = z0 + c.dz
+                        ncx = wx >> 4
+                        ncz = wz >> 4
+                        nix = wx & 15
+                        niz = wz & 15
+
+                        if c.expected_depth is not None or c.min_depth is not None or c.max_depth is not None:
+                            if ncx == cx and ncz == cz:
+                                depth = grid[nix * 16 + niz]
+                            else:
+                                neighbor_grid = get_chunk(ncx, ncz)
+                                depth = neighbor_grid[nix * 16 + niz]
+
                             if c.expected_depth is not None and depth != c.expected_depth:
-                                inter_failed = True
+                                ok = False
                                 break
                             if c.min_depth is not None and depth < c.min_depth:
-                                inter_failed = True
+                                ok = False
                                 break
                             if c.max_depth is not None and depth > c.max_depth:
-                                inter_failed = True
+                                ok = False
                                 break
-                    if inter_failed:
-                        continue
 
-                    matches.append((x0, target_y, z0, x0 >> 4, z0 >> 4, rot_deg))
+                        if c.expected_rotation is not None:
+                            rot = get_texture_rotation_index(wx, target_y, wz)
+                            if rot != c.expected_rotation:
+                                ok = False
+                                break
+
+                    if ok:
+                        matches.append((x0, target_y, z0, x0 >> 4, z0 >> 4, rot_deg))
 
         if len(chunk_cache) > 4000:
             chunk_cache.clear()
@@ -904,7 +982,7 @@ class BedrockSearchEngine:
                     cx_end = min(cx + batch_size - 1, max_cx)
                     for cz in range(min_cz, max_cz + 1, batch_size):
                         cz_end = min(cz + batch_size - 1, max_cz)
-                        tasks.append((cx, cx_end, cz, cz_end, serialized_constraints, mode_val, version_str, self.world_seed, deg))
+                        tasks.append((cx, cx_end, cz, cz_end, serialized_constraints, mode_val, version_str, self.world_seed, deg, target_y))
 
             with mp.Pool(processes=self.threads) as pool:
                 for batch_matches in pool.imap_unordered(_worker_scan_chunk_batch, tasks):

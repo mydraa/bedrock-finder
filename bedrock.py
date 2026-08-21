@@ -946,8 +946,15 @@ Usage Examples:
     parser.add_argument("--grid-size", type=int, nargs=2, metavar=("ROWS", "COLS"), help="Grid dimensions for image extraction (e.g. 8 8).")
     parser.add_argument("--export-chunk", type=int, nargs=2, metavar=("CHUNK_X", "CHUNK_Z"), help="Prints ASCII map of a chunk for inspection.")
     parser.add_argument("--benchmark", action="store_true", help="Runs scanner performance benchmark.")
+    parser.add_argument("--gui", action="store_true", help="Launches the interactive Modern Web User Interface.")
 
     args = parser.parse_args()
+
+    # GUI Launcher
+    if args.gui:
+        from web_gui import start_web_gui
+        start_web_gui()
+        return
 
     # Benchmark
     if args.benchmark:
